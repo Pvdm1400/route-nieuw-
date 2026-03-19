@@ -423,6 +423,7 @@ def geocode_address(address: str):
 # OSRM-hulpfuncties
 # ---------------------------------------------------------------------------
 
+@st.cache_data(ttl=3600, show_spinner=False)
 def _osrm_route(waypoints: list[tuple]) -> dict | None:
     """
     Vraag een OSRM-route op voor een lijst van (lat, lon) waypoints.
@@ -470,18 +471,17 @@ def _point_to_segment_distance_km(
 
 
 def _min_distance_to_polyline_km(
-    station_lat: float, station_lon: float, coords: list
+    station_lat: float, station_lon: float, coords: list, step: int = 15
 ) -> float:
     """
-    Kleinste loodrechte afstand van een station tot een GeoJSON-polyline.
+    Kleinste afstand van een station tot een GeoJSON-polyline.
+    Gebruikt elke `step`-de punt voor snelheid; nauwkeurig genoeg voor corridorfiltering.
     coords: lijst van [lon, lat]-punten.
     """
     min_dist = float("inf")
-    for i in range(len(coords) - 1):
-        a, b = coords[i], coords[i + 1]
-        d = _point_to_segment_distance_km(
-            station_lon, station_lat, a[0], a[1], b[0], b[1]
-        )
+    sampled = coords[::step]
+    for c in sampled:
+        d = geodesic((station_lat, station_lon), (c[1], c[0])).km
         if d < min_dist:
             min_dist = d
     return min_dist
@@ -516,48 +516,55 @@ def plan_route(
 
     base_coords = base_route["geometry"]["coordinates"]  # [[lon, lat], ...]
 
-    # Stap 2: corridorfilter op basis van echte routegeometrie
-    corridor_stations = [
+    # Stap 2: corridorfilter — eerst snelle bounding box, dan polyline-check
+    lats = [c[1] for c in base_coords]
+    lons = [c[0] for c in base_coords]
+    # Voeg corridor_km toe als marge (~1 graad ≈ 111 km)
+    margin_deg = corridor_km / 100.0
+    min_lat, max_lat = min(lats) - margin_deg, max(lats) + margin_deg
+    min_lon, max_lon = min(lons) - margin_deg, max(lons) + margin_deg
+
+    bbox_candidates = [
         s for s in tankstations
+        if min_lat <= s["lat"] <= max_lat and min_lon <= s["lon"] <= max_lon
+    ]
+    corridor_stations = [
+        s for s in bbox_candidates
         if _min_distance_to_polyline_km(s["lat"], s["lon"], base_coords) <= corridor_km
     ]
 
     # Stap 3: kies stops langs de route
+    # Bouw eerst een cumulatieve afstandslijst (eenmalig, O(N))
+    cum_dists = [0.0]
+    for i in range(1, len(base_coords)):
+        p1, p2 = base_coords[i - 1], base_coords[i]
+        cum_dists.append(
+            cum_dists[-1] + geodesic((p1[1], p1[0]), (p2[1], p2[0])).km
+        )
+
+    total_base_km = cum_dists[-1]
     selected_stops: list[dict] = []
     used_names: set[str] = set()
-    accumulated_km = 0.0
-    last_coord = base_coords[0]
+    next_trigger = interval_km
 
-    for coord in base_coords[1:]:
-        step_km = geodesic(
-            (last_coord[1], last_coord[0]), (coord[1], coord[0])
-        ).km
-        accumulated_km += step_km
+    while next_trigger < total_base_km - 10:  # stop als we bijna aan het einde zijn
+        # Zoek het punt op de route dat het dichtst bij next_trigger km ligt
+        idx = min(range(len(cum_dists)), key=lambda i: abs(cum_dists[i] - next_trigger))
+        coord = base_coords[idx]  # [lon, lat]
 
-        if accumulated_km >= interval_km:
-            # Kies station dichtstbij dit punt op de route
-            available = [s for s in corridor_stations if s["name"] not in used_names]
-            if available:
-                closest = min(
-                    available,
-                    key=lambda s: geodesic(
-                        (coord[1], coord[0]), (s["lat"], s["lon"])
-                    ).km,
-                )
-                selected_stops.append(closest)
-                used_names.add(closest["name"])
-            else:
-                # Geen station beschikbaar: sla positie op als placeholder
-                selected_stops.append(
-                    {
-                        "name": "Geen OG-station beschikbaar",
-                        "lat": coord[1],
-                        "lon": coord[0],
-                    }
-                )
-            accumulated_km = 0.0
-
-        last_coord = coord
+        available = [s for s in corridor_stations if s["name"] not in used_names]
+        if available:
+            closest = min(
+                available,
+                key=lambda s: geodesic((coord[1], coord[0]), (s["lat"], s["lon"])).km,
+            )
+            selected_stops.append(closest)
+            used_names.add(closest["name"])
+        else:
+            selected_stops.append(
+                {"name": "Geen OG-station beschikbaar", "lat": coord[1], "lon": coord[0]}
+            )
+        next_trigger += interval_km
 
     # Stap 4: definitieve OSRM-route met tankstops
     stop_coords = [(s["lat"], s["lon"]) for s in selected_stops]
@@ -577,17 +584,13 @@ def plan_route(
         final_route = base_route
 
     final_coords = final_route["geometry"]["coordinates"]
-    total_km = _route_length_km(final_coords)
+    # Gebruik OSRM's eigen afstand (meters → km) — sneller dan herberekening
+    total_km = final_route.get("distance", 0) / 1000
     # Duur in minuten (OSRM geeft seconden)
     total_min = final_route.get("duration", 0) / 60
 
-    # Cumulatieve afstand per waypoint (voor CSV-export)
-    cumulative: list[float] = [0.0]
-    for i in range(1, len(final_coords)):
-        p1, p2 = final_coords[i - 1], final_coords[i]
-        cumulative.append(
-            cumulative[-1] + geodesic((p1[1], p1[0]), (p2[1], p2[0])).km
-        )
+    # Cumulatieve afstand: gebruik basisroute-cumsom als benadering voor CSV
+    cumulative = cum_dists
 
     return {
         "base_coords": base_coords,
