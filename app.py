@@ -1,28 +1,18 @@
 import re
-import time
 import io
+import math
 
 import streamlit as st
 import requests
 import pandas as pd
 import folium
-from folium import plugins
 from streamlit_folium import st_folium
-from geopy.distance import geodesic
 from geopy.geocoders import Nominatim, Photon
 from geopy.extra.rate_limiter import RateLimiter
 from geopy.exc import GeocoderUnavailable, GeocoderTimedOut, GeocoderServiceError
 
 # ---------------------------------------------------------------------------
 # Pagina-configuratie
-# ---------------------------------------------------------------------------
-st.set_page_config(
-    page_title="OG Routeplanner",
-    page_icon="⛽",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-
 # ---------------------------------------------------------------------------
 # Station data  (304 stations, ongewijzigd overgenomen)
 # ---------------------------------------------------------------------------
@@ -366,78 +356,32 @@ tankstations = [
 ]
 
 # ---------------------------------------------------------------------------
-# OSRM-configuratie
+# Snelle haversine (vervangt geopy.geodesic voor interne berekeningen)
+# ---------------------------------------------------------------------------
+def _hav(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Haversine afstand in km — ~10× sneller dan geopy.geodesic."""
+    R = 6371.0
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = math.sin(dlat / 2) ** 2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2
+    return R * 2 * math.asin(math.sqrt(a))
+
+
+# ---------------------------------------------------------------------------
+# OSRM
 # ---------------------------------------------------------------------------
 OSRM_SERVER = "https://router.project-osrm.org"
-OSRM_TIMEOUT = 30  # seconden
+OSRM_TIMEOUT = 25
 
-
-# ---------------------------------------------------------------------------
-# Geocoding
-# ---------------------------------------------------------------------------
-NOMINATIM_UA = "og-routeplanner/2.0"
-
-_geolocator_osm = Nominatim(user_agent=NOMINATIM_UA, timeout=15)
-_geocode_osm = RateLimiter(
-    _geolocator_osm.geocode, min_delay_seconds=1, max_retries=2, error_wait_seconds=2.0
-)
-
-_geolocator_photon = Photon(user_agent=NOMINATIM_UA, timeout=15)
-_geocode_photon = RateLimiter(
-    _geolocator_photon.geocode, min_delay_seconds=1, max_retries=2, error_wait_seconds=2.0
-)
-
-
-@st.cache_data(ttl=24 * 3600, show_spinner=False)
-def geocode_address(address: str):
-    """Geeft (lat, lon) terug of None.  Accepteert ook directe 'lat,lon' invoer."""
-    addr = (address or "").strip()
-    if not addr:
-        return None
-
-    # Directe coordinaten
-    m = re.match(r"^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$", addr)
-    if m:
-        return (float(m.group(1)), float(m.group(2)))
-
-    # Nominatim
-    try:
-        loc = _geocode_osm(addr)
-        if loc:
-            return (loc.latitude, loc.longitude)
-    except (GeocoderUnavailable, GeocoderTimedOut, GeocoderServiceError):
-        pass
-
-    # Fallback: Photon
-    try:
-        loc = _geocode_photon(addr)
-        if loc:
-            return (loc.latitude, loc.longitude)
-    except (GeocoderUnavailable, GeocoderTimedOut, GeocoderServiceError):
-        pass
-
-    return None
-
-
-# ---------------------------------------------------------------------------
-# OSRM-hulpfuncties
-# ---------------------------------------------------------------------------
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def _osrm_route(waypoints: list[tuple]) -> dict | None:
-    """
-    Vraag een OSRM-route op voor een lijst van (lat, lon) waypoints.
-    Geeft het volledige routes[0]-object terug of None bij een fout.
-    """
+def _osrm_route(waypoints: tuple) -> dict | None:
     coord_str = ";".join(f"{lon},{lat}" for lat, lon in waypoints)
-    url = (
-        f"{OSRM_SERVER}/route/v1/driving/{coord_str}"
-        "?overview=full&geometries=geojson"
-    )
+    url = f"{OSRM_SERVER}/route/v1/driving/{coord_str}?overview=full&geometries=geojson"
     try:
-        resp = requests.get(url, timeout=OSRM_TIMEOUT)
-        resp.raise_for_status()
-        data = resp.json()
+        r = requests.get(url, timeout=OSRM_TIMEOUT)
+        r.raise_for_status()
+        data = r.json()
         if data.get("code") == "Ok" and data.get("routes"):
             return data["routes"][0]
     except requests.RequestException:
@@ -445,494 +389,458 @@ def _osrm_route(waypoints: list[tuple]) -> dict | None:
     return None
 
 
-def _route_length_km(geojson_coords: list) -> float:
-    """Berekent de totale lengte van een GeoJSON-polyline in km."""
-    total = 0.0
-    for i in range(1, len(geojson_coords)):
-        p1 = geojson_coords[i - 1]  # [lon, lat]
-        p2 = geojson_coords[i]
-        total += geodesic((p1[1], p1[0]), (p2[1], p2[0])).km
-    return total
-
-
-def _point_to_segment_distance_km(
-    px: float, py: float, ax: float, ay: float, bx: float, by: float
-) -> float:
-    """
-    Loodrechte afstand van punt P naar lijnsegment AB (in graden, benadering).
-    Geeft de afstand in km terug.
-    """
-    dx, dy = bx - ax, by - ay
-    if dx == 0 and dy == 0:
-        return geodesic((py, px), (ay, ax)).km
-    t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)))
-    closest = (ax + t * dx, ay + t * dy)
-    return geodesic((py, px), (closest[1], closest[0])).km
-
-
-def _min_distance_to_polyline_km(
-    station_lat: float, station_lon: float, coords: list, step: int = 15
-) -> float:
-    """
-    Kleinste afstand van een station tot een GeoJSON-polyline.
-    Gebruikt elke `step`-de punt voor snelheid; nauwkeurig genoeg voor corridorfiltering.
-    coords: lijst van [lon, lat]-punten.
-    """
-    min_dist = float("inf")
-    sampled = coords[::step]
-    for c in sampled:
-        d = geodesic((station_lat, station_lon), (c[1], c[0])).km
-        if d < min_dist:
-            min_dist = d
-    return min_dist
-
-
 # ---------------------------------------------------------------------------
-# Kern routelogica
+# Geocoding
 # ---------------------------------------------------------------------------
+NOMINATIM_UA = "og-routeplanner/2.0"
+_geo_osm = RateLimiter(Nominatim(user_agent=NOMINATIM_UA, timeout=10).geocode,
+                       min_delay_seconds=1, max_retries=2, error_wait_seconds=1.5)
+_geo_photon = RateLimiter(Photon(user_agent=NOMINATIM_UA, timeout=10).geocode,
+                          min_delay_seconds=0.5, max_retries=2, error_wait_seconds=1.0)
 
-def plan_route(
-    start: tuple,
-    end: tuple,
-    intermediate: list[tuple],
-    interval_km: int,
-    corridor_km: int,
-) -> dict | None:
-    """
-    Planningslogica:
-    1. Haal de basisroute op (start → [tussenstops] → eind).
-    2. Filter stations op corridorafstand langs de echte routegeometrie.
-    3. Loopt langs de polyline en selecteert de dichtstbijzijnde station
-       zodra de afstand het interval bereikt.
-    4. Bouwt een definitieve OSRM-route door alle waypoints.
-    5. Geeft een dict terug met alle info of None bij een fout.
-    """
-    base_waypoints = [start] + intermediate + [end]
 
-    # Stap 1: basisroute
-    base_route = _osrm_route(base_waypoints)
-    if base_route is None:
+@st.cache_data(ttl=24 * 3600, show_spinner=False)
+def geocode_address(address: str):
+    addr = (address or "").strip()
+    if not addr:
         return None
+    m = re.match(r"^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$", addr)
+    if m:
+        return (float(m.group(1)), float(m.group(2)))
+    for fn in (_geo_osm, _geo_photon):
+        try:
+            loc = fn(addr)
+            if loc:
+                return (loc.latitude, loc.longitude)
+        except (GeocoderUnavailable, GeocoderTimedOut, GeocoderServiceError):
+            pass
+    return None
 
-    base_coords = base_route["geometry"]["coordinates"]  # [[lon, lat], ...]
 
-    # Stap 2: corridorfilter — eerst snelle bounding box, dan polyline-check
+# ---------------------------------------------------------------------------
+# Routelogica
+# ---------------------------------------------------------------------------
+def _corridor_stations(base_coords: list, corridor_km: float) -> list:
     lats = [c[1] for c in base_coords]
     lons = [c[0] for c in base_coords]
-    # Voeg corridor_km toe als marge (~1 graad ≈ 111 km)
-    margin_deg = corridor_km / 100.0
-    min_lat, max_lat = min(lats) - margin_deg, max(lats) + margin_deg
-    min_lon, max_lon = min(lons) - margin_deg, max(lons) + margin_deg
+    margin = corridor_km / 100.0
+    min_lat, max_lat = min(lats) - margin, max(lats) + margin
+    min_lon, max_lon = min(lons) - margin, max(lons) + margin
+    sampled = base_coords[::15]  # ~evenly sampled for polyline check
 
-    bbox_candidates = [
-        s for s in tankstations
-        if min_lat <= s["lat"] <= max_lat and min_lon <= s["lon"] <= max_lon
-    ]
-    corridor_stations = [
-        s for s in bbox_candidates
-        if _min_distance_to_polyline_km(s["lat"], s["lon"], base_coords) <= corridor_km
-    ]
+    result = []
+    for s in tankstations:
+        if not (min_lat <= s["lat"] <= max_lat and min_lon <= s["lon"] <= max_lon):
+            continue
+        if min(_hav(s["lat"], s["lon"], c[1], c[0]) for c in sampled) <= corridor_km:
+            result.append(s)
+    return result
 
-    # Stap 3: kies stops langs de route
-    # Bouw eerst een cumulatieve afstandslijst (eenmalig, O(N))
-    cum_dists = [0.0]
-    for i in range(1, len(base_coords)):
-        p1, p2 = base_coords[i - 1], base_coords[i]
-        cum_dists.append(
-            cum_dists[-1] + geodesic((p1[1], p1[0]), (p2[1], p2[0])).km
-        )
 
-    total_base_km = cum_dists[-1]
-    selected_stops: list[dict] = []
-    used_names: set[str] = set()
-    next_trigger = interval_km
+@st.cache_data(ttl=3600, show_spinner=False)
+def plan_route(start: tuple, end: tuple, intermediate: tuple,
+               interval_km: int, corridor_km: int) -> dict | None:
+    base_wps = (start,) + intermediate + (end,)
+    base = _osrm_route(base_wps)
+    if base is None:
+        return None
 
-    while next_trigger < total_base_km - 10:  # stop als we bijna aan het einde zijn
-        # Zoek het punt op de route dat het dichtst bij next_trigger km ligt
-        idx = min(range(len(cum_dists)), key=lambda i: abs(cum_dists[i] - next_trigger))
-        coord = base_coords[idx]  # [lon, lat]
+    coords = base["geometry"]["coordinates"]  # [[lon, lat], ...]
 
-        available = [s for s in corridor_stations if s["name"] not in used_names]
+    # Cumulatieve afstand langs route (haversine, snel)
+    cum = [0.0]
+    for i in range(1, len(coords)):
+        a, b = coords[i - 1], coords[i]
+        cum.append(cum[-1] + _hav(a[1], a[0], b[1], b[0]))
+    total_base = cum[-1]
+
+    # Corridorstations
+    stations = _corridor_stations(coords, corridor_km)
+
+    # Selecteer stops op vaste intervallen
+    stops: list[dict] = []
+    used: set[str] = set()
+    trigger = interval_km
+    while trigger < total_base - 10:
+        idx = min(range(len(cum)), key=lambda i: abs(cum[i] - trigger))
+        pt = coords[idx]
+        available = [s for s in stations if s["name"] not in used]
         if available:
-            closest = min(
-                available,
-                key=lambda s: geodesic((coord[1], coord[0]), (s["lat"], s["lon"])).km,
-            )
-            selected_stops.append(closest)
-            used_names.add(closest["name"])
+            best = min(available, key=lambda s: _hav(pt[1], pt[0], s["lat"], s["lon"]))
+            stops.append(best)
+            used.add(best["name"])
         else:
-            selected_stops.append(
-                {"name": "Geen OG-station beschikbaar", "lat": coord[1], "lon": coord[0]}
-            )
-        next_trigger += interval_km
+            stops.append({"name": "Geen OG-station beschikbaar", "lat": pt[1], "lon": pt[0]})
+        trigger += interval_km
 
-    # Stap 4: definitieve OSRM-route met tankstops
-    stop_coords = [(s["lat"], s["lon"]) for s in selected_stops]
-    all_waypoints = [start] + intermediate + stop_coords + [end]
-    # Sorteer tussenstops op positie langs de route voor een logische volgorde
-    # (eenvoudige benadering: sorteer op cumulatieve afstand vanaf start)
-    def _dist_from_start(wp):
-        return geodesic(start, wp).km
+    # Definitieve route (alleen extra OSRM-call als er stops zijn)
+    if stops:
+        stop_coords = [(s["lat"], s["lon"]) for s in stops]
+        interior = list(intermediate) + stop_coords
+        interior.sort(key=lambda wp: _hav(start[0], start[1], wp[0], wp[1]))
+        final_wps = tuple([start] + interior + [end])
+        final = _osrm_route(final_wps) or base
+    else:
+        final = base
 
-    interior = [start] + intermediate + stop_coords
-    interior_sorted = sorted(interior[1:], key=_dist_from_start)
-    final_waypoints = [start] + interior_sorted + [end]
-
-    final_route = _osrm_route(final_waypoints)
-    if final_route is None:
-        # Val terug op basisroute als de definitieve route mislukt
-        final_route = base_route
-
-    final_coords = final_route["geometry"]["coordinates"]
-    # Gebruik OSRM's eigen afstand (meters → km) — sneller dan herberekening
-    total_km = final_route.get("distance", 0) / 1000
-    # Duur in minuten (OSRM geeft seconden)
-    total_min = final_route.get("duration", 0) / 60
-
-    # Cumulatieve afstand: gebruik basisroute-cumsom als benadering voor CSV
-    cumulative = cum_dists
+    final_coords = final["geometry"]["coordinates"]
+    total_km = final.get("distance", 0) / 1000
+    total_min = final.get("duration", 0) / 60
 
     return {
-        "base_coords": base_coords,
+        "base_coords": coords,
         "final_coords": final_coords,
-        "selected_stops": selected_stops,
+        "selected_stops": stops,
         "total_km": total_km,
         "total_min": total_min,
         "start": start,
         "end": end,
-        "intermediate": intermediate,
-        "final_waypoints": final_waypoints,
-        "cumulative": cumulative,
+        "intermediate": list(intermediate),
+        "cum_dists": cum,
     }
 
-
-# ---------------------------------------------------------------------------
-# Kaartweergave
-# ---------------------------------------------------------------------------
-
-def build_map(result: dict) -> folium.Map:
-    """Bouwt een folium-kaart met route, stops, start en eind."""
-    base_coords = result["base_coords"]
-    final_coords = result["final_coords"]
-    selected_stops = result["selected_stops"]
-    start = result["start"]
-    end = result["end"]
-
-    # Centreer op het midden van de route
-    mid_idx = len(final_coords) // 2
-    center = [final_coords[mid_idx][1], final_coords[mid_idx][0]]
-
-    m = folium.Map(location=center, zoom_start=6, tiles="CartoDB positron")
-
-    # Directe route als gestippelde lijn (referentie, geen stops)
-    base_latlng = [[c[1], c[0]] for c in base_coords]
-    folium.PolyLine(
-        base_latlng,
-        color="#aaaaaa",
-        weight=3,
-        dash_array="8 6",
-        tooltip="Directe route (zonder stops)",
-        opacity=0.7,
-    ).add_to(m)
-
-    # Werkelijke route met stops als volle lijn
-    final_latlng = [[c[1], c[0]] for c in final_coords]
-    folium.PolyLine(
-        final_latlng,
-        color="#1a73e8",
-        weight=5,
-        tooltip="Route met tankstops",
-        opacity=0.9,
-    ).add_to(m)
-
-    # Startmarker (groen)
-    folium.Marker(
-        location=[start[0], start[1]],
-        tooltip="<b>Start</b>",
-        icon=folium.Icon(color="green", icon="play", prefix="fa"),
-    ).add_to(m)
-
-    # Eindmarker (rood)
-    folium.Marker(
-        location=[end[0], end[1]],
-        tooltip="<b>Bestemming</b>",
-        icon=folium.Icon(color="red", icon="flag", prefix="fa"),
-    ).add_to(m)
-
-    # Tussenstops (blauw)
-    for i, wp in enumerate(result["intermediate"], 1):
-        folium.Marker(
-            location=[wp[0], wp[1]],
-            tooltip=f"<b>Tussenstop {i}</b>",
-            icon=folium.Icon(color="blue", icon="map-marker", prefix="fa"),
-        ).add_to(m)
-
-    # Tankstations
-    for idx, stop in enumerate(selected_stops, 1):
-        is_missing = stop["name"].startswith("Geen OG-station")
-        color = "orange" if not is_missing else "gray"
-        icon_name = "tint" if not is_missing else "exclamation"
-        folium.Marker(
-            location=[stop["lat"], stop["lon"]],
-            tooltip=f"<b>Tankstop {idx}</b><br>{stop['name']}",
-            popup=folium.Popup(
-                f"<b>Tankstop {idx}</b><br>{stop['name']}<br>"
-                f"Lat: {stop['lat']:.5f}, Lon: {stop['lon']:.5f}",
-                max_width=250,
-            ),
-            icon=folium.Icon(color=color, icon=icon_name, prefix="fa"),
-        ).add_to(m)
-
-    # Pas kaartgrenzen aan
-    all_points = base_latlng + [[stop["lat"], stop["lon"]] for stop in selected_stops]
-    if all_points:
-        lats = [p[0] for p in all_points]
-        lons = [p[1] for p in all_points]
-        m.fit_bounds([[min(lats), min(lons)], [max(lats), max(lons)]])
-
-    return m
-
-
-# ---------------------------------------------------------------------------
-# CSV-export
-# ---------------------------------------------------------------------------
-
-def build_csv(result: dict, route_name: str) -> bytes:
-    """Bouwt een CSV met alle waypoints (naam, lat, lon, cumulatieve afstand)."""
-    start = result["start"]
-    end = result["end"]
-    rows = [
-        {
-            "Naam": f"Start ({route_name})",
-            "Lat": start[0],
-            "Lon": start[1],
-            "Cumulatieve afstand (km)": 0.0,
-        }
-    ]
-    for i, wp in enumerate(result["intermediate"], 1):
-        rows.append(
-            {
-                "Naam": f"Tussenstop {i}",
-                "Lat": wp[0],
-                "Lon": wp[1],
-                "Cumulatieve afstand (km)": round(
-                    geodesic(start, wp).km, 1
-                ),
-            }
-        )
-    for i, stop in enumerate(result["selected_stops"], 1):
-        rows.append(
-            {
-                "Naam": f"Tankstop {i}: {stop['name']}",
-                "Lat": stop["lat"],
-                "Lon": stop["lon"],
-                "Cumulatieve afstand (km)": round(
-                    geodesic(start, (stop["lat"], stop["lon"])).km, 1
-                ),
-            }
-        )
-    rows.append(
-        {
-            "Naam": f"Bestemming ({route_name})",
-            "Lat": end[0],
-            "Lon": end[1],
-            "Cumulatieve afstand (km)": round(result["total_km"], 1),
-        }
-    )
-    df = pd.DataFrame(rows)
-    buf = io.StringIO()
-    df.to_csv(buf, index=False)
-    return buf.getvalue().encode("utf-8")
-
-
-# ---------------------------------------------------------------------------
-# Streamlit UI
-# ---------------------------------------------------------------------------
-
-# Sidebar
-with st.sidebar:
-    try:
-        st.image("Alleen spark.png", width=60)
-    except Exception:
-        pass
-
-    st.title("OG Routeplanner")
-    st.markdown("Plan een rijroute met OG-tankstops langs de weg.")
-    st.divider()
-
-    st.subheader("Route-invoer")
-    start_address = st.text_input("Startadres", placeholder="bijv. Amsterdam, Nederland")
-    end_address = st.text_input("Eindadres", placeholder="bijv. Berlijn, Duitsland")
-
-    st.subheader("Optionele tussenstops")
-    mid1 = st.text_input("Tussenstop 1 (optioneel)", placeholder="")
-    mid2 = st.text_input("Tussenstop 2 (optioneel)", placeholder="")
-    mid3 = st.text_input("Tussenstop 3 (optioneel)", placeholder="")
-
-    st.divider()
-    st.subheader("Instellingen")
-    interval_km = st.slider(
-        "Afstand tussen tankstops (km)",
-        min_value=100,
-        max_value=500,
-        value=250,
-        step=25,
-    )
-    corridor_km = st.slider(
-        "Max. omweg vanaf route (km)",
-        min_value=5,
-        max_value=300,
-        value=50,
-        step=5,
-    )
-
-    route_name = st.text_input("Routenaam", value="Mijn Route")
-    st.divider()
-    generate_btn = st.button("Genereer route", type="primary", use_container_width=True)
-
-# Hoofdgebied
-st.markdown(
-    """
-    <style>
-    .summary-card {
-        background: #f0f4ff;
-        border-radius: 10px;
-        padding: 16px 24px;
-        margin-bottom: 16px;
-        display: flex;
-        gap: 40px;
-        flex-wrap: wrap;
-    }
-    .summary-metric { text-align: center; }
-    .summary-metric .value { font-size: 1.6rem; font-weight: 700; color: #1a73e8; }
-    .summary-metric .label { font-size: 0.82rem; color: #555; margin-top: 2px; }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
-if not generate_btn:
-    st.info(
-        "Vul een start- en eindadres in de zijbalk in en klik op **Genereer route**."
-    )
-    st.stop()
-
-# ---------------------------------------------------------------------------
-# Verwerking na klikken op de knop
-# ---------------------------------------------------------------------------
-
-errors: list[str] = []
-
-# Geocode startadres
-with st.spinner("Startadres opzoeken..."):
-    start_coord = geocode_address(start_address) if start_address.strip() else None
-if not start_coord:
-    errors.append(
-        f"Kon het startadres **\"{start_address}\"** niet vinden. "
-        "Probeer een andere schrijfwijze of gebruik 'lat,lon' notatie."
-    )
-
-# Geocode eindadres
-with st.spinner("Eindadres opzoeken..."):
-    end_coord = geocode_address(end_address) if end_address.strip() else None
-if not end_coord:
-    errors.append(
-        f"Kon het eindadres **\"{end_address}\"** niet vinden. "
-        "Probeer een andere schrijfwijze of gebruik 'lat,lon' notatie."
-    )
-
-# Geocode optionele tussenstops
-intermediate_coords: list[tuple] = []
-for idx, addr in enumerate([mid1, mid2, mid3], 1):
-    if addr and addr.strip():
-        with st.spinner(f"Tussenstop {idx} opzoeken..."):
-            coord = geocode_address(addr)
-        if coord:
-            intermediate_coords.append(coord)
-        else:
-            errors.append(
-                f"Kon tussenstop {idx} **\"{addr}\"** niet vinden. "
-                "Deze stop wordt overgeslagen."
-            )
-
-if errors:
-    for err in errors:
-        st.error(err)
-    if not start_coord or not end_coord:
-        st.stop()
-
-# Route plannen
-with st.spinner("Route berekenen via OSRM..."):
-    result = plan_route(
-        start_coord,
-        end_coord,
-        intermediate_coords,
-        interval_km,
-        corridor_km,
-    )
-
-if result is None:
-    st.error(
-        "Kon geen route berekenen. Controleer of de adressen bereikbaar zijn per auto "
-        "en of de OSRM-server beschikbaar is."
-    )
-    st.stop()
-
-# ---------------------------------------------------------------------------
-# Samenvattingskaart
-# ---------------------------------------------------------------------------
-stops = result["selected_stops"]
-n_stops = len(stops)
-total_km = result["total_km"]
-total_min = result["total_min"]
-hours = int(total_min // 60)
-minutes = int(total_min % 60)
-avg_interval = round(total_km / (n_stops + 1), 1) if n_stops >= 0 else total_km
-
-col_a, col_b, col_c, col_d = st.columns(4)
-col_a.metric("Totale afstand", f"{total_km:.0f} km")
-col_b.metric("Geschatte reistijd", f"{hours}u {minutes}m")
-col_c.metric("Aantal tankstops", str(n_stops))
-col_d.metric("Gem. km tussen stops", f"{avg_interval:.0f} km")
-
-st.divider()
 
 # ---------------------------------------------------------------------------
 # Kaart
 # ---------------------------------------------------------------------------
-with st.spinner("Kaart renderen..."):
-    folium_map = build_map(result)
-    st_folium(folium_map, use_container_width=True, height=540, returned_objects=[])
+def build_map(result: dict) -> folium.Map:
+    base_coords = result["base_coords"]
+    final_coords = result["final_coords"]
+    stops = result["selected_stops"]
+    start = result["start"]
+    end = result["end"]
 
-st.divider()
+    mid = final_coords[len(final_coords) // 2]
+    m = folium.Map(location=[mid[1], mid[0]], zoom_start=6,
+                   tiles="CartoDB positron", prefer_canvas=True)
+
+    base_ll = [[c[1], c[0]] for c in base_coords]
+    folium.PolyLine(base_ll, color="#b0bec5", weight=2, dash_array="6 5",
+                    tooltip="Directe route", opacity=0.6).add_to(m)
+
+    final_ll = [[c[1], c[0]] for c in final_coords]
+    folium.PolyLine(final_ll, color="#00897b", weight=5,
+                    tooltip="Route met tankstops", opacity=0.95).add_to(m)
+
+    # Start / eind
+    for loc, label, color, icon in [
+        (start, "Start", "darkgreen", "circle"),
+        (end, "Bestemming", "darkred", "flag"),
+    ]:
+        folium.Marker([loc[0], loc[1]], tooltip=f"<b>{label}</b>",
+                      icon=folium.Icon(color=color, icon=icon, prefix="fa")).add_to(m)
+
+    # Tussenstops
+    for i, wp in enumerate(result["intermediate"], 1):
+        folium.Marker([wp[0], wp[1]], tooltip=f"<b>Tussenstop {i}</b>",
+                      icon=folium.Icon(color="blue", icon="circle", prefix="fa")).add_to(m)
+
+    # Tankstations
+    for i, s in enumerate(stops, 1):
+        missing = s["name"].startswith("Geen OG")
+        folium.Marker(
+            [s["lat"], s["lon"]],
+            tooltip=f"<b>⛽ Stop {i}</b><br>{s['name']}",
+            popup=folium.Popup(
+                f"<b>Stop {i}</b><br>{s['name']}<br>{s['lat']:.4f}, {s['lon']:.4f}",
+                max_width=220),
+            icon=folium.Icon(color="orange" if not missing else "gray",
+                             icon="tint" if not missing else "exclamation",
+                             prefix="fa"),
+        ).add_to(m)
+
+    all_ll = base_ll + [[s["lat"], s["lon"]] for s in stops]
+    lats_all = [p[0] for p in all_ll]
+    lons_all = [p[1] for p in all_ll]
+    m.fit_bounds([[min(lats_all), min(lons_all)], [max(lats_all), max(lons_all)]])
+    return m
+
 
 # ---------------------------------------------------------------------------
-# Stopdetails in uitklapbare secties
+# CSV
 # ---------------------------------------------------------------------------
+def build_csv(result: dict, route_name: str) -> bytes:
+    start = result["start"]
+    rows = [{"Naam": f"Start — {route_name}", "Lat": start[0], "Lon": start[1],
+             "Afstand_km": 0.0}]
+    for i, wp in enumerate(result["intermediate"], 1):
+        rows.append({"Naam": f"Tussenstop {i}", "Lat": wp[0], "Lon": wp[1],
+                     "Afstand_km": round(_hav(start[0], start[1], wp[0], wp[1]), 1)})
+    for i, s in enumerate(result["selected_stops"], 1):
+        rows.append({"Naam": f"Tankstop {i}: {s['name']}", "Lat": s["lat"], "Lon": s["lon"],
+                     "Afstand_km": round(_hav(start[0], start[1], s["lat"], s["lon"]), 1)})
+    end = result["end"]
+    rows.append({"Naam": f"Bestemming — {route_name}", "Lat": end[0], "Lon": end[1],
+                 "Afstand_km": round(result["total_km"], 1)})
+    buf = io.StringIO()
+    pd.DataFrame(rows).to_csv(buf, index=False)
+    return buf.getvalue().encode("utf-8")
+
+
+# ===========================================================================
+# UI
+# ===========================================================================
+
+st.set_page_config(page_title="OG Routeplanner", page_icon="⛽", layout="wide",
+                   initial_sidebar_state="expanded")
+
+# ── Global CSS ──────────────────────────────────────────────────────────────
+st.markdown("""
+<style>
+/* ── Achtergrond ── */
+[data-testid="stAppViewContainer"] { background: #0f1923; }
+[data-testid="stHeader"] { background: transparent; }
+
+/* ── Sidebar ── */
+[data-testid="stSidebar"] {
+    background: linear-gradient(160deg, #0d2137 0%, #112233 100%);
+    border-right: 1px solid #1e3a52;
+}
+[data-testid="stSidebar"] * { color: #cdd9e5 !important; }
+[data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2,
+[data-testid="stSidebar"] h3 { color: #e8f4fd !important; }
+[data-testid="stSidebar"] .stTextInput input {
+    background: #0a1929 !important;
+    border: 1px solid #1e3a52 !important;
+    border-radius: 8px !important;
+    color: #e8f4fd !important;
+}
+[data-testid="stSidebar"] .stSlider [data-baseweb="slider"] { margin-top: 4px; }
+
+/* ── Primaire knop ── */
+button[kind="primary"] {
+    background: linear-gradient(135deg, #00897b, #00acc1) !important;
+    border: none !important;
+    border-radius: 10px !important;
+    font-weight: 700 !important;
+    letter-spacing: 0.5px !important;
+    color: #fff !important;
+    box-shadow: 0 4px 14px rgba(0,137,123,.45) !important;
+    transition: transform .15s, box-shadow .15s !important;
+}
+button[kind="primary"]:hover {
+    transform: translateY(-2px) !important;
+    box-shadow: 0 6px 20px rgba(0,137,123,.6) !important;
+}
+
+/* ── Metriekkaarten ── */
+.metric-row { display: flex; gap: 16px; margin: 20px 0 24px; flex-wrap: wrap; }
+.metric-card {
+    flex: 1; min-width: 140px;
+    background: linear-gradient(135deg, #112233, #0d2137);
+    border: 1px solid #1e3a52;
+    border-radius: 14px;
+    padding: 18px 20px;
+    text-align: center;
+}
+.metric-card .icon { font-size: 1.6rem; margin-bottom: 6px; }
+.metric-card .val  { font-size: 1.75rem; font-weight: 800; color: #00bcd4; line-height:1; }
+.metric-card .lbl  { font-size: 0.75rem; color: #7fa8c9; margin-top: 5px; text-transform: uppercase; letter-spacing: .8px; }
+
+/* ── Hero banner ── */
+.hero {
+    background: linear-gradient(135deg, #00695c 0%, #006064 50%, #01579b 100%);
+    border-radius: 16px;
+    padding: 28px 36px;
+    margin-bottom: 24px;
+    display: flex;
+    align-items: center;
+    gap: 20px;
+}
+.hero-title { font-size: 1.7rem; font-weight: 800; color: #fff; margin: 0; }
+.hero-sub   { font-size: 0.9rem; color: #b2ebf2; margin: 4px 0 0; }
+
+/* ── Stop-kaartjes ── */
+.stop-card {
+    background: #112233;
+    border: 1px solid #1e3a52;
+    border-left: 4px solid #00897b;
+    border-radius: 10px;
+    padding: 14px 18px;
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+}
+.stop-badge {
+    background: #00897b;
+    color: #fff;
+    font-weight: 700;
+    font-size: .85rem;
+    border-radius: 50%;
+    width: 34px; height: 34px;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+}
+.stop-name  { color: #e8f4fd; font-weight: 600; font-size: .95rem; }
+.stop-coord { color: #7fa8c9; font-size: .78rem; margin-top: 2px; }
+
+/* ── Divider ── */
+hr { border-color: #1e3a52 !important; }
+
+/* ── Info/fout ── */
+[data-testid="stAlert"] { border-radius: 10px !important; }
+
+/* ── Algemene tekst ── */
+p, li, label { color: #cdd9e5 !important; }
+h1, h2, h3 { color: #e8f4fd !important; }
+</style>
+""", unsafe_allow_html=True)
+
+# ── Sidebar ─────────────────────────────────────────────────────────────────
+with st.sidebar:
+    try:
+        st.image("Alleen spark.png", width=56)
+    except Exception:
+        st.markdown("### ⛽")
+
+    st.markdown("## OG Routeplanner")
+    st.markdown("<small>Plan een rijroute met OG-tankstops</small>", unsafe_allow_html=True)
+    st.divider()
+
+    st.markdown("**Route**")
+    start_address = st.text_input("Startadres", placeholder="bijv. Amsterdam")
+    end_address   = st.text_input("Eindadres",  placeholder="bijv. Berlijn")
+
+    with st.expander("Tussenstops (optioneel)"):
+        mid1 = st.text_input("Tussenstop 1", placeholder="")
+        mid2 = st.text_input("Tussenstop 2", placeholder="")
+        mid3 = st.text_input("Tussenstop 3", placeholder="")
+
+    st.markdown("**Instellingen**")
+    interval_km = st.slider("Km tussen stops", 100, 500, 250, 25)
+    corridor_km = st.slider("Corridorbreedte (km)", 5, 200, 50, 5)
+    route_name  = st.text_input("Routenaam", value="Mijn Route")
+
+    st.divider()
+    generate_btn = st.button("⛽  Genereer route", type="primary", use_container_width=True)
+
+# ── Hero ────────────────────────────────────────────────────────────────────
+st.markdown("""
+<div class="hero">
+  <div style="font-size:3rem">🗺️</div>
+  <div>
+    <p class="hero-title">OG Routeplanner</p>
+    <p class="hero-sub">Optimale rijroutes met biogastankstops in NL · DE · FR · SE</p>
+  </div>
+</div>
+""", unsafe_allow_html=True)
+
+if not generate_btn:
+    st.markdown("""
+    <div style="background:#112233;border:1px solid #1e3a52;border-radius:12px;
+         padding:32px;text-align:center;color:#7fa8c9;">
+      <div style="font-size:2.5rem;margin-bottom:12px">👈</div>
+      <div style="font-size:1.1rem;color:#cdd9e5;font-weight:600;">
+        Vul een start- en eindadres in en klik op <b style="color:#00bcd4">Genereer route</b>
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
+    st.stop()
+
+# ── Geocoding & routing ──────────────────────────────────────────────────────
+errors: list[str] = []
+
+with st.spinner("Adressen opzoeken..."):
+    start_coord = geocode_address(start_address) if start_address.strip() else None
+    end_coord   = geocode_address(end_address)   if end_address.strip()   else None
+
+if not start_coord:
+    errors.append(f'Startadres **"{start_address}"** niet gevonden.')
+if not end_coord:
+    errors.append(f'Eindadres **"{end_address}"** niet gevonden.')
+
+intermediate_coords: list[tuple] = []
+for i, addr in enumerate([mid1, mid2, mid3], 1):
+    if addr and addr.strip():
+        with st.spinner(f"Tussenstop {i} opzoeken..."):
+            c = geocode_address(addr)
+        if c:
+            intermediate_coords.append(c)
+        else:
+            errors.append(f'Tussenstop {i} **"{addr}"** niet gevonden — overgeslagen.')
+
+for e in errors:
+    st.error(e)
+if not start_coord or not end_coord:
+    st.stop()
+
+with st.spinner("Route berekenen..."):
+    result = plan_route(
+        start_coord, end_coord,
+        tuple(intermediate_coords),
+        interval_km, corridor_km,
+    )
+
+if result is None:
+    st.error("Kon geen route berekenen. Controleer de adressen of probeer het opnieuw.")
+    st.stop()
+
+# ── Samenvattingskaarten ─────────────────────────────────────────────────────
+stops    = result["selected_stops"]
+n_stops  = len(stops)
+total_km = result["total_km"]
+total_min= result["total_min"]
+hours    = int(total_min // 60)
+mins     = int(total_min % 60)
+avg_km   = round(total_km / (n_stops + 1)) if n_stops else round(total_km)
+
+st.markdown(f"""
+<div class="metric-row">
+  <div class="metric-card">
+    <div class="icon">📏</div>
+    <div class="val">{total_km:.0f} km</div>
+    <div class="lbl">Totale afstand</div>
+  </div>
+  <div class="metric-card">
+    <div class="icon">⏱️</div>
+    <div class="val">{hours}u {mins}m</div>
+    <div class="lbl">Reistijd</div>
+  </div>
+  <div class="metric-card">
+    <div class="icon">⛽</div>
+    <div class="val">{n_stops}</div>
+    <div class="lbl">Tankstops</div>
+  </div>
+  <div class="metric-card">
+    <div class="icon">📍</div>
+    <div class="val">{avg_km} km</div>
+    <div class="lbl">Gem. interval</div>
+  </div>
+</div>
+""", unsafe_allow_html=True)
+
+# ── Kaart ────────────────────────────────────────────────────────────────────
+folium_map = build_map(result)
+st_folium(folium_map, use_container_width=True, height=520, returned_objects=[])
+
+# ── Stoplijst ────────────────────────────────────────────────────────────────
 if stops:
-    st.subheader(f"Tankstops ({n_stops})")
-    for i, stop in enumerate(stops, 1):
-        label = f"Stop {i}: {stop['name']}"
-        with st.expander(label):
-            col1, col2 = st.columns(2)
-            col1.markdown(f"**Naam:** {stop['name']}")
-            col2.markdown(f"**Coordinaten:** {stop['lat']:.5f}, {stop['lon']:.5f}")
-            dist_from_start = geodesic(
-                start_coord, (stop["lat"], stop["lon"])
-            ).km
-            st.caption(f"Ca. {dist_from_start:.0f} km van het startadres (vogelvlucht)")
+    st.markdown(f"### ⛽ Tankstops ({n_stops})")
+    stop_html = ""
+    for i, s in enumerate(stops, 1):
+        missing = s["name"].startswith("Geen OG")
+        badge_color = "#e57373" if missing else "#00897b"
+        dist = round(_hav(start_coord[0], start_coord[1], s["lat"], s["lon"]))
+        stop_html += f"""
+        <div class="stop-card" style="border-left-color:{badge_color}">
+          <div class="stop-badge" style="background:{badge_color}">{i}</div>
+          <div>
+            <div class="stop-name">{"⚠️ " if missing else ""}{s['name']}</div>
+            <div class="stop-coord">
+              {s['lat']:.4f}, {s['lon']:.4f} &nbsp;·&nbsp; ca. {dist} km van start
+            </div>
+          </div>
+        </div>"""
+    st.markdown(stop_html, unsafe_allow_html=True)
 else:
-    st.info("Geen tankstops nodig voor deze route op het gekozen interval.")
+    st.info("Geen tankstops nodig voor dit interval.")
 
-# ---------------------------------------------------------------------------
-# CSV-download
-# ---------------------------------------------------------------------------
+# ── CSV-download ─────────────────────────────────────────────────────────────
 st.divider()
-csv_bytes = build_csv(result, route_name)
 st.download_button(
-    label="Download route als CSV",
-    data=csv_bytes,
+    label="⬇️  Download route als CSV",
+    data=build_csv(result, route_name),
     file_name=f"{route_name.replace(' ', '_')}_route.csv",
     mime="text/csv",
-    use_container_width=False,
 )
