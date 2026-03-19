@@ -1,0 +1,935 @@
+import re
+import time
+import io
+
+import streamlit as st
+import requests
+import pandas as pd
+import folium
+from folium import plugins
+from streamlit_folium import st_folium
+from geopy.distance import geodesic
+from geopy.geocoders import Nominatim, Photon
+from geopy.extra.rate_limiter import RateLimiter
+from geopy.exc import GeocoderUnavailable, GeocoderTimedOut, GeocoderServiceError
+
+# ---------------------------------------------------------------------------
+# Pagina-configuratie
+# ---------------------------------------------------------------------------
+st.set_page_config(
+    page_title="OG Routeplanner",
+    page_icon="⛽",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+# ---------------------------------------------------------------------------
+# Station data  (304 stations, ongewijzigd overgenomen)
+# ---------------------------------------------------------------------------
+tankstations = [
+    {"name": "GNV station Aalst", "lat": 50.9369, "lon": 4.6648},
+    {"name": "Aral Tankstelle Oberhausen", "lat": 51.4691, "lon": 6.8786},
+    {"name": "Westfalen Tankstelle Hamm", "lat": 51.6804, "lon": 7.8228},
+    {"name": "Esso Tankstelle Dortmund", "lat": 51.5253, "lon": 7.4654},
+    {"name": "AVIA Tankstelle Bielefeld", "lat": 52.0254, "lon": 8.5317},
+    {"name": "Shell Tankstelle Hannover", "lat": 52.3727, "lon": 9.7404},
+    {"name": "Aral Tankstelle Hamburg-Nord", "lat": 53.6122, "lon": 10.0195},
+    {"name": "OMV Tankstelle München-Ost", "lat": 48.1421, "lon": 11.5966},
+    {"name": "BP Tankstelle Stuttgart-Vaihingen", "lat": 48.7227, "lon": 9.1041},
+    {"name": "Total Tankstelle Frankfurt Sachsenhausen", "lat": 50.0927, "lon": 8.6866},
+    {"name": "Aral Tankstelle Köln-Ehrenfeld", "lat": 50.9483, "lon": 6.8943},
+    {"name": "Shell Tankstelle Düsseldorf-Flingern", "lat": 51.2324, "lon": 6.8171},
+    {"name": "Jet Tankstelle Leipzig-Mitte", "lat": 51.3350, "lon": 12.3925},
+    {"name": "Esso Tankstelle Dresden-Neustadt", "lat": 51.0665, "lon": 13.7516},
+    {"name": "Aral Tankstelle Nürnberg-Ost", "lat": 49.4556, "lon": 11.1024},
+    {"name": "Total Tankstelle Bremen-Mitte", "lat": 53.0806, "lon": 8.8085},
+    {"name": "OMV Tankstelle Augsburg-Lechhausen", "lat": 48.3849, "lon": 10.9139},
+    {"name": "Shell Tankstelle Mannheim-Neckarau", "lat": 49.4612, "lon": 8.5129},
+    {"name": "BP Tankstelle Karlsruhe-Mühlburg", "lat": 49.0061, "lon": 8.3643},
+    {"name": "Aral Tankstelle Bonn-Beuel", "lat": 50.7355, "lon": 7.1208},
+    {"name": "Esso Tankstelle Wiesbaden-Kastel", "lat": 50.0182, "lon": 8.2803},
+    {"name": "Total Tankstelle Münster-Hafen", "lat": 51.9728, "lon": 7.6236},
+    {"name": "Jet Tankstelle Bochum-Riemke", "lat": 51.5020, "lon": 7.2188},
+    {"name": "Shell Tankstelle Gelsenkirchen-Buer", "lat": 51.5771, "lon": 7.0721},
+    {"name": "Aral Tankstelle Essen-Frillendorf", "lat": 51.4685, "lon": 7.0586},
+    {"name": "OMV Tankstelle Regensburg-Steinweg", "lat": 48.9996, "lon": 12.0904},
+    {"name": "BP Tankstelle Freiburg-Haslach", "lat": 47.9851, "lon": 7.8283},
+    {"name": "Total Tankstelle Kiel-Gaarden", "lat": 54.3201, "lon": 10.1526},
+    {"name": "Esso Tankstelle Lübeck-Moisling", "lat": 53.8649, "lon": 10.6481},
+    {"name": "Shell Tankstelle Rostock-Lütten Klein", "lat": 54.1066, "lon": 12.0612},
+    {"name": "Aral Tankstelle Erfurt-Ilversgehofen", "lat": 50.9988, "lon": 11.0207},
+    {"name": "Jet Tankstelle Magdeburg-Stadtfeld", "lat": 52.1324, "lon": 11.6051},
+    {"name": "Total Tankstelle Halle-Silberhöhe", "lat": 51.4594, "lon": 11.9829},
+    {"name": "BP Tankstelle Chemnitz-Gablenz", "lat": 50.8350, "lon": 12.8946},
+    {"name": "OMV Tankstelle Ingolstadt-Mitte", "lat": 48.7657, "lon": 11.4266},
+    {"name": "Shell Tankstelle Ulm-Böfingen", "lat": 48.4011, "lon": 9.9893},
+    {"name": "Aral Tankstelle Würzburg-Frauenland", "lat": 49.7793, "lon": 9.9398},
+    {"name": "Esso Tankstelle Mainz-Hartenberg", "lat": 50.0003, "lon": 8.2381},
+    {"name": "Total Tankstelle Kassel-Wehlheiden", "lat": 51.3114, "lon": 9.4638},
+    {"name": "Jet Tankstelle Braunschweig-Weststadt", "lat": 52.2676, "lon": 10.4895},
+    {"name": "Shell Tankstelle Osnabrück-Schölerberg", "lat": 52.2949, "lon": 8.0678},
+    {"name": "BP Tankstelle Duisburg-Rheinhausen", "lat": 51.4012, "lon": 6.7069},
+    {"name": "Aral Tankstelle Krefeld-Fischeln", "lat": 51.3171, "lon": 6.5897},
+    {"name": "OMV Tankstelle Mönchengladbach-Rheydt", "lat": 51.1655, "lon": 6.4495},
+    {"name": "Total Tankstelle Aachen-Laurensberg", "lat": 50.7921, "lon": 6.1276},
+    {"name": "Esso Tankstelle Trier-West", "lat": 49.7538, "lon": 6.6108},
+    {"name": "Shell Tankstelle Saarbrücken-Malstatt", "lat": 49.2397, "lon": 7.0015},
+    {"name": "Jet Tankstelle Heilbronn-Böckingen", "lat": 49.1362, "lon": 9.2095},
+    {"name": "Aral Tankstelle Ludwigshafen-Friesenheim", "lat": 49.4988, "lon": 8.4214},
+    {"name": "BP Tankstelle Heidelberg-Rohrbach", "lat": 49.3775, "lon": 8.6936},
+    {"name": "Total Tankstelle Pforzheim-Büchenbronn", "lat": 48.8732, "lon": 8.6833},
+    {"name": "Shell Tankstelle Reutlingen-Orschel-Hagen", "lat": 48.4739, "lon": 9.2155},
+    {"name": "Aral Tankstelle Göttingen-Grone", "lat": 51.5207, "lon": 9.9081},
+    {"name": "OMV Tankstelle Wolfsburg-Detmerode", "lat": 52.4463, "lon": 10.7892},
+    {"name": "Esso Tankstelle Hildesheim-Ost", "lat": 52.1538, "lon": 9.9848},
+    {"name": "Jet Tankstelle Oldenburg-Donnerschwee", "lat": 53.1518, "lon": 8.2218},
+    {"name": "Shell Tankstelle Wilhelmshaven-Fedderwardergroden", "lat": 53.5671, "lon": 8.1213},
+    {"name": "BP Tankstelle Flensburg-Mürwik", "lat": 54.8065, "lon": 9.4575},
+    {"name": "Total Tankstelle Lübeck-St. Lorenz", "lat": 53.8852, "lon": 10.6982},
+    {"name": "Aral Tankstelle Stralsund-Grünhufe", "lat": 54.3052, "lon": 13.1153},
+    {"name": "Esso Tankstelle Greifswald-Schönwalde", "lat": 54.0820, "lon": 13.4203},
+    {"name": "Shell Tankstelle Neubrandenburg-Ost", "lat": 53.5596, "lon": 13.2898},
+    {"name": "Jet Tankstelle Schwerin-Weststadt", "lat": 53.6312, "lon": 11.3921},
+    {"name": "OMV Tankstelle Passau-Innstadt", "lat": 48.5678, "lon": 13.4812},
+    {"name": "Aral Tankstelle Landshut-Achdorf", "lat": 48.5261, "lon": 12.1744},
+    {"name": "Total Tankstelle Rosenheim-Aising", "lat": 47.8473, "lon": 12.1453},
+    {"name": "BP Tankstelle Kempten-Sankt Mang", "lat": 47.7321, "lon": 10.3168},
+    {"name": "Shell Tankstelle Lindau-Aeschach", "lat": 47.5612, "lon": 9.6934},
+    {"name": "Esso Tankstelle Ravensburg-Weststadt", "lat": 47.7842, "lon": 9.5982},
+    {"name": "Aral Tankstelle Konstanz-Petershausen", "lat": 47.6783, "lon": 9.1672},
+    {"name": "Total Tankstelle Tuttlingen-Mitte", "lat": 47.9845, "lon": 8.8194},
+    {"name": "Jet Tankstelle Villingen-Schwenningen", "lat": 48.0593, "lon": 8.4588},
+    {"name": "OMV Tankstelle Offenburg-Oststadt", "lat": 48.4721, "lon": 7.9501},
+    {"name": "Shell Tankstelle Lahr-Hugsweier", "lat": 48.3487, "lon": 7.8678},
+    {"name": "BP Tankstelle Lörrach-Haagen", "lat": 47.6122, "lon": 7.6741},
+    {"name": "Aral Tankstelle Waldshut-Tiengen", "lat": 47.6234, "lon": 8.2174},
+    {"name": "Total Tankstelle Singen-Hegau", "lat": 47.7578, "lon": 8.8315},
+    {"name": "Esso Tankstelle Friedrichshafen-Fischbach", "lat": 47.6789, "lon": 9.5139},
+    {"name": "Shell Tankstelle Biberach-Mitte", "lat": 48.1014, "lon": 9.7864},
+    {"name": "Jet Tankstelle Heidenheim-Schnaitheim", "lat": 48.6938, "lon": 10.1548},
+    {"name": "Aral Tankstelle Schwäbisch Gmünd-Bargau", "lat": 48.8033, "lon": 9.8079},
+    {"name": "OMV Tankstelle Göppingen-Jebenhausen", "lat": 48.7031, "lon": 9.6793},
+    {"name": "BP Tankstelle Aalen-Wasseralfingen", "lat": 48.8643, "lon": 10.1134},
+    {"name": "Total Tankstelle Schwäbisch Hall-Hessental", "lat": 49.1103, "lon": 9.7349},
+    {"name": "Shell Tankstelle Crailsheim-Mitte", "lat": 49.1371, "lon": 10.0742},
+    {"name": "Aral Tankstelle Ansbach-Innenstadt", "lat": 49.3011, "lon": 10.5725},
+    {"name": "Esso Tankstelle Fürth-Poppenreuth", "lat": 49.4937, "lon": 10.9871},
+    {"name": "Jet Tankstelle Erlangen-Bruck", "lat": 49.5926, "lon": 11.0382},
+    {"name": "Total Tankstelle Bayreuth-Meyernberg", "lat": 49.9408, "lon": 11.5814},
+    {"name": "OMV Tankstelle Hof-Mitte", "lat": 50.3119, "lon": 11.9155},
+    {"name": "BP Tankstelle Bamberg-Bug", "lat": 49.9143, "lon": 10.9211},
+    {"name": "Shell Tankstelle Schweinfurt-Bergl", "lat": 50.0563, "lon": 10.2287},
+    {"name": "Aral Tankstelle Aschaffenburg-Damm", "lat": 49.9671, "lon": 9.1462},
+    {"name": "Total Tankstelle Darmstadt-Kranichstein", "lat": 49.8941, "lon": 8.6793},
+    {"name": "Esso Tankstelle Offenbach-Bürgel", "lat": 50.1001, "lon": 8.7871},
+    {"name": "Jet Tankstelle Hanau-Großauheim", "lat": 50.1281, "lon": 8.9651},
+    {"name": "Shell Tankstelle Fulda-Galerie", "lat": 50.5556, "lon": 9.6793},
+    {"name": "BP Tankstelle Marburg-Wehrda", "lat": 50.8248, "lon": 8.7694},
+    {"name": "Aral Tankstelle Gießen-Wieseck", "lat": 50.5992, "lon": 8.6881},
+    {"name": "OMV Tankstelle Siegen-Geisweid", "lat": 50.9201, "lon": 8.0234},
+    {"name": "Total Tankstelle Hagen-Haspe", "lat": 51.3578, "lon": 7.4089},
+    {"name": "Shell Tankstelle Witten-Annen", "lat": 51.4312, "lon": 7.3415},
+    {"name": "Esso Tankstelle Herne-Eickel", "lat": 51.5430, "lon": 7.2041},
+    {"name": "Jet Tankstelle Recklinghausen-Süd", "lat": 51.5872, "lon": 7.1866},
+    {"name": "Aral Tankstelle Bottrop-Eigen", "lat": 51.5241, "lon": 6.9613},
+    {"name": "BP Tankstelle Wesel-Stadtlohn", "lat": 51.6578, "lon": 6.5781},
+    {"name": "Total Tankstelle Cleves-Materborn", "lat": 51.7723, "lon": 6.1278},
+    {"name": "Shell Tankstelle Neuss-Norf", "lat": 51.1543, "lon": 6.7389},
+    {"name": "Aral Tankstelle Solingen-Wald", "lat": 51.1831, "lon": 7.1035},
+    {"name": "Esso Tankstelle Remscheid-Hasten", "lat": 51.1982, "lon": 7.2284},
+    {"name": "Jet Tankstelle Wuppertal-Vohwinkel", "lat": 51.2446, "lon": 7.0839},
+    {"name": "OMV Tankstelle Leverkusen-Schlebusch", "lat": 51.0287, "lon": 7.0492},
+    {"name": "BP Tankstelle Bergisch Gladbach-Sand", "lat": 50.9843, "lon": 7.1519},
+    {"name": "Shell Tankstelle Troisdorf-Sieglar", "lat": 50.8021, "lon": 7.1783},
+    {"name": "Total Tankstelle Cologne-Porz", "lat": 50.8776, "lon": 7.0512},
+    {"name": "Aral Tankstelle Cologne-Mülheim", "lat": 50.9607, "lon": 7.0065},
+    {"name": "Esso Tankstelle Cologne-Pesch", "lat": 51.0232, "lon": 6.8924},
+    {"name": "Jet Tankstelle Dormagen-Nievenheim", "lat": 51.1089, "lon": 6.7785},
+    {"name": "Shell Tankstelle Grevenbroich-Kapellen", "lat": 51.1025, "lon": 6.5543},
+    {"name": "BP Tankstelle Erkelenz-Lövenich", "lat": 51.1026, "lon": 6.2890},
+    {"name": "Aral Tankstelle Heinsberg-Oberbruch", "lat": 51.0513, "lon": 6.1152},
+    {"name": "Total Tankstelle Maastricht station", "lat": 50.8512, "lon": 5.7053},
+    {"name": "Shell Tankstelle Roermond-Oost", "lat": 51.1956, "lon": 5.9981},
+    {"name": "Esso Tankstelle Venlo-Blerick", "lat": 51.3680, "lon": 6.1542},
+    {"name": "Jet Tankstelle Nijmegen-Neerbosch", "lat": 51.8346, "lon": 5.8258},
+    {"name": "OMV Tankstelle Arnhem-Presikhaaf", "lat": 51.9889, "lon": 5.9543},
+    {"name": "BP Tankstelle Apeldoorn-Zevenhuizen", "lat": 52.2076, "lon": 5.9713},
+    {"name": "Aral Tankstelle Deventer-Colmschate", "lat": 52.2629, "lon": 6.2108},
+    {"name": "Shell Tankstelle Zwolle-Holtenbroek", "lat": 52.5194, "lon": 6.0812},
+    {"name": "Total Tankstelle Groningen-Hoogkerk", "lat": 53.2167, "lon": 6.5003},
+    {"name": "Esso Tankstelle Leeuwarden-Camminghaburen", "lat": 53.1834, "lon": 5.8492},
+    {"name": "Jet Tankstelle Emmen-Bargeres", "lat": 52.7824, "lon": 6.9208},
+    {"name": "Shell Tankstelle Enschede-Glanerbrug", "lat": 52.1972, "lon": 6.9792},
+    {"name": "BP Tankstelle Almelo-Ossenkoppelen", "lat": 52.3590, "lon": 6.6542},
+    {"name": "Aral Tankstelle Hengelo-Beckum", "lat": 52.2549, "lon": 6.7989},
+    {"name": "Total Tankstelle Utrecht-Overvecht", "lat": 52.1184, "lon": 5.1337},
+    {"name": "OMV Tankstelle Amersfoort-Vathorst", "lat": 52.1981, "lon": 5.4230},
+    {"name": "Shell Tankstelle Hilversum-Larenseweg", "lat": 52.2274, "lon": 5.1863},
+    {"name": "Esso Tankstelle Amsterdam-Osdorp", "lat": 52.3669, "lon": 4.8165},
+    {"name": "Jet Tankstelle Haarlem-Schalkwijk", "lat": 52.3700, "lon": 4.6757},
+    {"name": "Aral Tankstelle Leiden-Noord", "lat": 52.1768, "lon": 4.4932},
+    {"name": "BP Tankstelle Den Haag-Mariahoeve", "lat": 52.0785, "lon": 4.3500},
+    {"name": "Shell Tankstelle Rotterdam-Overschie", "lat": 51.9495, "lon": 4.4565},
+    {"name": "Total Tankstelle Dordrecht-Dubbeldam", "lat": 51.8090, "lon": 4.7072},
+    {"name": "Esso Tankstelle Breda-Princenhage", "lat": 51.5734, "lon": 4.7341},
+    {"name": "Jet Tankstelle Tilburg-Reeshof", "lat": 51.5618, "lon": 5.0027},
+    {"name": "OMV Tankstelle 's-Hertogenbosch-Rosmalen", "lat": 51.7251, "lon": 5.3842},
+    {"name": "Shell Tankstelle Eindhoven-Tongelre", "lat": 51.4363, "lon": 5.5016},
+    {"name": "BP Tankstelle Helmond-Brandevoort", "lat": 51.4785, "lon": 5.7131},
+    {"name": "Aral Tankstelle Venray-Smakt", "lat": 51.5372, "lon": 5.9866},
+    {"name": "Total Tankstelle Weert-Moesel", "lat": 51.2371, "lon": 5.7282},
+    {"name": "Esso Tankstelle Sittard-Oost", "lat": 51.0013, "lon": 5.8843},
+    {"name": "Shell Tankstelle Heerlen-Meezenbroek", "lat": 50.8831, "lon": 5.9923},
+    {"name": "Jet Tankstelle Assen-Peelo", "lat": 52.9994, "lon": 6.5591},
+    {"name": "Aral Tankstelle Drachten-Drachtstercompagnie", "lat": 53.1117, "lon": 6.1498},
+    {"name": "BP Tankstelle Hoogeveen-Wolfsbos", "lat": 52.7147, "lon": 6.4866},
+    {"name": "Shell Tankstelle Meppel-Koedijk", "lat": 52.6892, "lon": 6.1979},
+    {"name": "Total Tankstelle Harderwijk-Drielanden", "lat": 52.3485, "lon": 5.6415},
+    {"name": "Esso Tankstelle Almere-Muziekwijk", "lat": 52.3753, "lon": 5.1881},
+    {"name": "Jet Tankstelle Lelystad-Zuiderzeewijk", "lat": 52.5050, "lon": 5.4742},
+    {"name": "OMV Tankstelle Alkmaar-Oudorp", "lat": 52.6492, "lon": 4.7583},
+    {"name": "Shell Tankstelle Hoorn-Blokker", "lat": 52.6624, "lon": 5.0779},
+    {"name": "BP Tankstelle Zaandam-Westerwatering", "lat": 52.4540, "lon": 4.8025},
+    {"name": "Aral Tankstelle Schiphol-Hoofddorp", "lat": 52.3054, "lon": 4.6800},
+    {"name": "Total Tankstelle Alphen aan den Rijn-Ridderveld", "lat": 52.1298, "lon": 4.6593},
+    {"name": "Esso Tankstelle Gouda-Goverwelle", "lat": 52.0218, "lon": 4.7418},
+    {"name": "Jet Tankstelle Delft-Buitenhof", "lat": 52.0119, "lon": 4.3534},
+    {"name": "Shell Tankstelle Schiedam-Groenoord", "lat": 51.9282, "lon": 4.3891},
+    {"name": "OMV Tankstelle Spijkenisse-Vriesland", "lat": 51.8432, "lon": 4.3234},
+    {"name": "Aral Tankstelle Middelburg-Dauwendaele", "lat": 51.5038, "lon": 3.5955},
+    {"name": "BP Tankstelle Vlissingen-Oost", "lat": 51.4521, "lon": 3.6302},
+    {"name": "Total Tankstelle Bergen op Zoom-Oud Gastel", "lat": 51.5021, "lon": 4.2982},
+    {"name": "Shell Tankstelle Roosendaal-Tolberg", "lat": 51.5263, "lon": 4.4773},
+    {"name": "Esso Tankstelle Oosterhout-Oosterheide", "lat": 51.6343, "lon": 4.8710},
+    {"name": "Jet Tankstelle Gorinchem-Haarwijk", "lat": 51.8346, "lon": 4.9760},
+    {"name": "Aral Tankstelle Tiel-Drumpt", "lat": 51.8945, "lon": 5.4484},
+    {"name": "OMV Tankstelle Wageningen-Nude", "lat": 51.9687, "lon": 5.6539},
+    {"name": "Shell Tankstelle Veenendaal-Dragonder", "lat": 52.0327, "lon": 5.5722},
+    {"name": "BP Tankstelle Barneveld-Voorthuizen", "lat": 52.1901, "lon": 5.6071},
+    {"name": "Total Tankstelle Ede-Kernhem", "lat": 52.0560, "lon": 5.6622},
+    {"name": "Esso Tankstelle Doetinchem-Gaanderen", "lat": 51.9494, "lon": 6.3233},
+    {"name": "Jet Tankstelle Zutphen-Warnsveld", "lat": 52.1553, "lon": 6.2234},
+    {"name": "Shell Tankstelle Winterswijk-Miste", "lat": 51.9727, "lon": 6.7191},
+    {"name": "Aral Tankstelle Lingen-Bramsche", "lat": 52.5178, "lon": 7.3521},
+    {"name": "BP Tankstelle Nordhorn-Blanke", "lat": 52.4273, "lon": 7.0831},
+    {"name": "Total Tankstelle Rheine-Mesum", "lat": 52.2856, "lon": 7.4438},
+    {"name": "Shell Tankstelle Gronau-Epe", "lat": 52.2281, "lon": 7.0558},
+    {"name": "Esso Tankstelle Stockholm-Liljeholmen", "lat": 59.3082, "lon": 18.0191},
+    {"name": "Jet Tankstelle Stockholm-Kungsholmen", "lat": 59.3338, "lon": 18.0286},
+    {"name": "OMV Tankstelle Stockholm-Södermalm", "lat": 59.3158, "lon": 18.0704},
+    {"name": "Aral Tankstelle Göteborg-Hisingen", "lat": 57.7268, "lon": 11.9396},
+    {"name": "Shell Tankstelle Göteborg-Frölunda", "lat": 57.6678, "lon": 11.9266},
+    {"name": "BP Tankstelle Göteborg-Angered", "lat": 57.7942, "lon": 12.0423},
+    {"name": "Total Tankstelle Malmö-Rosengård", "lat": 55.5847, "lon": 13.0341},
+    {"name": "Esso Tankstelle Malmö-Limhamn", "lat": 55.5639, "lon": 12.9355},
+    {"name": "Jet Tankstelle Malmö-Husie", "lat": 55.5878, "lon": 13.0884},
+    {"name": "Shell Tankstelle Helsingborg-Dalhem", "lat": 56.0524, "lon": 12.7133},
+    {"name": "OMV Tankstelle Uppsala-Gottsunda", "lat": 59.8239, "lon": 17.6076},
+    {"name": "BP Tankstelle Västerås-Råby", "lat": 59.6105, "lon": 16.5285},
+    {"name": "Aral Tankstelle Örebro-Brickeberg", "lat": 59.2728, "lon": 15.2108},
+    {"name": "Total Tankstelle Linköping-Ryd", "lat": 58.4135, "lon": 15.6211},
+    {"name": "Esso Tankstelle Norrköping-Marielund", "lat": 58.6057, "lon": 16.1987},
+    {"name": "Jet Tankstelle Jönköping-Råslätt", "lat": 57.7540, "lon": 14.1614},
+    {"name": "Shell Tankstelle Växjö-Araby", "lat": 56.8742, "lon": 14.7994},
+    {"name": "BP Tankstelle Kalmar-Norrliden", "lat": 56.6769, "lon": 16.3614},
+    {"name": "OMV Tankstelle Sundsvall-Skönsberg", "lat": 62.3859, "lon": 17.2953},
+    {"name": "Aral Tankstelle Umeå-Ålidhem", "lat": 63.8332, "lon": 20.2855},
+    {"name": "Total Tankstelle Luleå-Björkskatan", "lat": 65.5912, "lon": 22.1693},
+    {"name": "Esso Tankstelle Gävle-Sätra", "lat": 60.6608, "lon": 17.1288},
+    {"name": "Shell Tankstelle Borås-Hulta", "lat": 57.7182, "lon": 13.0015},
+    {"name": "Jet Tankstelle Eskilstuna-Skiftinge", "lat": 59.3609, "lon": 16.5097},
+    {"name": "OMV Tankstelle Södertälje-Brunnsäng", "lat": 59.1862, "lon": 17.6412},
+    {"name": "BP Tankstelle Halmstad-Vallås", "lat": 56.6876, "lon": 12.8831},
+    {"name": "Aral Tankstelle Karlstad-Kronoparken", "lat": 59.4119, "lon": 13.5154},
+    {"name": "Total Tankstelle Trollhättan-Lextorp", "lat": 58.2886, "lon": 12.2963},
+    {"name": "Shell Tankstelle Skövde-Norrmalm", "lat": 58.3993, "lon": 13.8627},
+    {"name": "Esso Tankstelle Falun-Hälsinggård", "lat": 60.6108, "lon": 15.6503},
+    {"name": "Jet Tankstelle Borlänge-Jakobsgårdarna", "lat": 60.4738, "lon": 15.4209},
+    {"name": "Total Tankstelle Paris-Belleville", "lat": 48.8694, "lon": 2.3736},
+    {"name": "BP Tankstelle Paris-Montparnasse", "lat": 48.8424, "lon": 2.3177},
+    {"name": "Shell Tankstelle Lyon-Villeurbanne", "lat": 45.7769, "lon": 4.8902},
+    {"name": "Aral Tankstelle Lyon-Vaise", "lat": 45.7741, "lon": 4.8044},
+    {"name": "Esso Tankstelle Marseille-Saint-Barthélemy", "lat": 43.3303, "lon": 5.3965},
+    {"name": "Jet Tankstelle Toulouse-Minimes", "lat": 43.6208, "lon": 1.4582},
+    {"name": "OMV Tankstelle Bordeaux-Mériadeck", "lat": 44.8355, "lon": -0.5866},
+    {"name": "Total Tankstelle Nantes-Doulon", "lat": 47.2228, "lon": -1.5157},
+    {"name": "Shell Tankstelle Strasbourg-Neuhof", "lat": 48.5513, "lon": 7.7752},
+    {"name": "BP Tankstelle Lille-Fives", "lat": 50.6467, "lon": 3.0908},
+    {"name": "Aral Tankstelle Nice-Fabron", "lat": 43.7054, "lon": 7.2354},
+    {"name": "Esso Tankstelle Rennes-Villejean", "lat": 48.1261, "lon": -1.7016},
+    {"name": "Jet Tankstelle Reims-Croix-Rouge", "lat": 49.2644, "lon": 4.0433},
+    {"name": "OMV Tankstelle Le Havre-Graville", "lat": 49.5058, "lon": 0.1401},
+    {"name": "Total Tankstelle Montpellier-Mosson", "lat": 43.6163, "lon": 3.8168},
+    {"name": "Shell Tankstelle Grenoble-Mistral", "lat": 45.1711, "lon": 5.7180},
+    {"name": "BP Tankstelle Dijon-Fontaine d'Ouche", "lat": 47.3098, "lon": 5.0024},
+    {"name": "Aral Tankstelle Nîmes-Pissevin", "lat": 43.8387, "lon": 4.3419},
+    {"name": "Esso Tankstelle Clermont-Ferrand-La Gauthière", "lat": 45.7840, "lon": 3.1264},
+    {"name": "Jet Tankstelle Le Mans-Bellevue", "lat": 48.0043, "lon": 0.1978},
+    {"name": "OMV Tankstelle Amiens-Etouvie", "lat": 49.9089, "lon": 2.2750},
+    {"name": "Shell Tankstelle Caen-La Folie Couvrechef", "lat": 49.2013, "lon": -0.3854},
+    {"name": "BP Tankstelle Orléans-La Source", "lat": 47.8672, "lon": 1.9275},
+    {"name": "Aral Tankstelle Tours-Fontaines", "lat": 47.3881, "lon": 0.7198},
+    {"name": "Total Tankstelle Metz-Bellecroix", "lat": 49.0989, "lon": 6.1937},
+    {"name": "Esso Tankstelle Nancy-Haussonville", "lat": 48.6989, "lon": 6.1618},
+    {"name": "Jet Tankstelle Mulhouse-Dornach", "lat": 47.7352, "lon": 7.3577},
+    {"name": "OMV Tankstelle Besançon-Planoise", "lat": 47.2303, "lon": 5.9827},
+    {"name": "Shell Tankstelle Rouen-Sotteville", "lat": 49.4107, "lon": 1.0867},
+    {"name": "BP Tankstelle Toulon-La Beaucaire", "lat": 43.1277, "lon": 5.9361},
+    {"name": "Aral Tankstelle Angers-Belle-Beille", "lat": 47.4801, "lon": -0.5847},
+    {"name": "Total Tankstelle Limoges-Beaubreuil", "lat": 45.8681, "lon": 1.2808},
+    {"name": "Esso Tankstelle Saint-Étienne-Montreynaud", "lat": 45.4540, "lon": 4.3980},
+    {"name": "Jet Tankstelle Villeurbanne-Gratte-Ciel", "lat": 45.7700, "lon": 4.8880},
+    {"name": "Shell Tankstelle Aix-en-Provence-Les Milles", "lat": 43.4994, "lon": 5.3633},
+    {"name": "BP Tankstelle Perpignan-Saint-Martin", "lat": 42.7024, "lon": 2.9169},
+    {"name": "Aral Tankstelle Brest-Lambézellec", "lat": 48.4181, "lon": -4.4814},
+    {"name": "Total Tankstelle Poitiers-Les Couronneries", "lat": 46.5793, "lon": 0.3434},
+    {"name": "Esso Tankstelle Champagne-Marne", "lat": 49.0440, "lon": 4.0242},
+    {"name": "Jet Tankstelle Valenciennes-Acacias", "lat": 50.3565, "lon": 3.5302},
+    {"name": "Shell Tankstelle Dunkerque-Petite Synthe", "lat": 51.0345, "lon": 2.3278},
+    {"name": "BP Tankstelle Calais-Beau Marais", "lat": 50.9561, "lon": 1.8692},
+    {"name": "Aral Tankstelle Boulogne-sur-Mer-Saint-Martin", "lat": 50.7255, "lon": 1.6059},
+    {"name": "OMV Tankstelle Pau-Ousse-Suzan", "lat": 43.2957, "lon": -0.3791},
+    {"name": "Total Tankstelle Bayonne-Saint-Pierre d'Irube", "lat": 43.4813, "lon": -1.4819},
+    {"name": "Shell Tankstelle Avignon-Monclar", "lat": 43.9446, "lon": 4.8220},
+    {"name": "Esso Tankstelle Montauban-Sapiac", "lat": 44.0268, "lon": 1.3667},
+    {"name": "Jet Tankstelle Béziers-La Devèze", "lat": 43.3427, "lon": 3.2150},
+    {"name": "OMV Tankstelle Arles-Barriol", "lat": 43.6786, "lon": 4.6381},
+    {"name": "BP Tankstelle Fréjus-Saint-Aygulf", "lat": 43.4056, "lon": 6.7456},
+    {"name": "Aral Tankstelle Cannes-Le Cannet", "lat": 43.5841, "lon": 7.0220},
+    {"name": "Total Tankstelle Antibes-Les Combes", "lat": 43.5838, "lon": 7.1190},
+    {"name": "Esso Tankstelle Ajaccio-Jardins de l'Empereur", "lat": 41.9139, "lon": 8.7327},
+    {"name": "Jet Tankstelle Bastia-Toga", "lat": 42.7100, "lon": 9.4611},
+    {"name": "Shell Tankstelle Chartres-Rechèvres", "lat": 48.4548, "lon": 1.5169},
+    {"name": "BP Tankstelle Bourges-Asnières", "lat": 47.0768, "lon": 2.3787},
+    {"name": "Aral Tankstelle Auxerre-La Chaîne", "lat": 47.8063, "lon": 3.5751},
+    {"name": "OMV Tankstelle Troyes-Champfleury", "lat": 48.2845, "lon": 4.0824},
+    {"name": "Total Tankstelle Chalons-en-Champagne-Comtes", "lat": 48.9576, "lon": 4.3571},
+    {"name": "Shell Tankstelle Évreux-Nétreville", "lat": 49.0223, "lon": 1.1473},
+    {"name": "Esso Tankstelle Laval-Saint-Nicolas", "lat": 48.0818, "lon": -0.7557},
+    {"name": "Jet Tankstelle Saint-Brieuc-Plérin", "lat": 48.5299, "lon": -2.7313},
+    {"name": "BP Tankstelle Lorient-Kerfichant", "lat": 47.7472, "lon": -3.3710},
+    {"name": "Aral Tankstelle Quimper-Penhars", "lat": 47.9810, "lon": -4.1041},
+    {"name": "Total Tankstelle Vannes-Tohannic", "lat": 47.6564, "lon": -2.7601},
+    {"name": "OMV Tankstelle Saint-Nazaire-Trignac", "lat": 47.3023, "lon": -2.1580},
+    {"name": "Shell Tankstelle La Rochelle-Mireuil", "lat": 46.1659, "lon": -1.1698},
+    {"name": "Esso Tankstelle Angoulême-Ma Campagne", "lat": 45.6471, "lon": 0.1438},
+    {"name": "Jet Tankstelle Périgueux-La Chapelle-Gonaguet", "lat": 45.1939, "lon": 0.6839},
+    {"name": "BP Tankstelle Brive-la-Gaillarde-Tujac", "lat": 45.1509, "lon": 1.5310},
+    {"name": "Aral Tankstelle Aurillac-La Jordanne", "lat": 44.9261, "lon": 2.4432},
+    {"name": "Total Tankstelle Moulins-Yzeure", "lat": 46.5571, "lon": 3.3581},
+    {"name": "Shell Tankstelle Vichy-Abrest", "lat": 46.1042, "lon": 3.4413},
+    {"name": "Esso Tankstelle Chalon-sur-Saône-Saint-Jean-des-Vignes", "lat": 46.7832, "lon": 4.8538},
+    {"name": "Jet Tankstelle Mâcon-Sancé", "lat": 46.3071, "lon": 4.8319},
+    {"name": "OMV Tankstelle Bourg-en-Bresse-Viriat", "lat": 46.2213, "lon": 5.2373},
+    {"name": "BP Tankstelle Valence-Fontbarlettes", "lat": 44.9469, "lon": 4.8994},
+    {"name": "Aral Tankstelle Montélimar-Meysse", "lat": 44.6134, "lon": 4.8112},
+    {"name": "Shell Tankstelle Orange-Codolet", "lat": 44.1357, "lon": 4.8012},
+    {"name": "Total Tankstelle Salon-de-Provence-Lançon", "lat": 43.6391, "lon": 5.1108},
+    {"name": "Esso Tankstelle Draguignan-La Foux", "lat": 43.5408, "lon": 6.4655},
+    {"name": "Jet Tankstelle Grasse-Saint-Jacques", "lat": 43.6655, "lon": 6.9297},
+    {"name": "Shell Tankstelle Mandelieu-la-Napoule-Centre", "lat": 43.5487, "lon": 6.9396},
+    {"name": "BP Tankstelle Saint-Raphaël-Boulouris", "lat": 43.4255, "lon": 6.8012},
+    {"name": "Aral Tankstelle Hyères-Costebelle", "lat": 43.1170, "lon": 6.1509},
+    {"name": "Total Tankstelle Bandol-Sanary", "lat": 43.1371, "lon": 5.7561},
+    {"name": "Esso Tankstelle Aubagne-Les Passons", "lat": 43.2921, "lon": 5.5931},
+    {"name": "Jet Tankstelle Martigues-Croix-Sainte", "lat": 43.4051, "lon": 5.0672},
+    {"name": "OMV Tankstelle Istres-Le Tubé", "lat": 43.5139, "lon": 4.9896},
+    {"name": "Shell Tankstelle Vitrolles-Les Estroublans", "lat": 43.4602, "lon": 5.2481},
+    {"name": "BP Tankstelle Miramas-Entressen", "lat": 43.5838, "lon": 5.0073},
+    {"name": "Aral Tankstelle Apt-Gargas", "lat": 43.8768, "lon": 5.3951},
+    {"name": "Total Tankstelle Carpentras-Serres", "lat": 44.0545, "lon": 5.0605},
+    {"name": "Esso Tankstelle Cavaillon-Plan de Cavaillon", "lat": 43.8472, "lon": 5.0424},
+    {"name": "Jet Tankstelle L'Isle-sur-la-Sorgue-Saumane", "lat": 43.9214, "lon": 5.0507},
+    {"name": "Shell Tankstelle Pertuis-Peyrolles", "lat": 43.7051, "lon": 5.5088},
+    {"name": "BP Tankstelle Manosque-Les Iscles", "lat": 43.8321, "lon": 5.7936},
+    {"name": "Aral Tankstelle Digne-les-Bains-Les Thuiles", "lat": 44.0986, "lon": 6.2289},
+    {"name": "Total Tankstelle Gap-La Pépinière", "lat": 44.5654, "lon": 6.0847},
+    {"name": "Esso Tankstelle Embrun-Saint-Marcellin", "lat": 44.5633, "lon": 6.4951},
+    {"name": "Jet Tankstelle Briançon-Sainte-Catherine", "lat": 44.9033, "lon": 6.6403},
+    {"name": "OMV Tankstelle Moûtiers-Salins-les-Thermes", "lat": 45.4867, "lon": 6.5271},
+    {"name": "Shell Tankstelle Bourg-Saint-Maurice-Les Arcs", "lat": 45.6153, "lon": 6.7713},
+    {"name": "BP Tankstelle Albertville-Conflans", "lat": 45.6718, "lon": 6.3912},
+    {"name": "Aral Tankstelle Chambéry-Bissy", "lat": 45.5723, "lon": 5.9341},
+    {"name": "Total Tankstelle Aix-les-Bains-Centre", "lat": 45.6903, "lon": 5.9124},
+    {"name": "Esso Tankstelle Annecy-Novel", "lat": 45.9163, "lon": 6.1341},
+    {"name": "Jet Tankstelle Thonon-les-Bains-Vongy", "lat": 46.3604, "lon": 6.4935},
+    {"name": "Shell Tankstelle Evian-les-Bains-Centre", "lat": 46.4020, "lon": 6.5893},
+    {"name": "OMV Tankstelle Cluses-Scionzier", "lat": 46.0600, "lon": 6.5741},
+    {"name": "BP Tankstelle Sallanches-Domancy", "lat": 45.9335, "lon": 6.6330},
+    {"name": "Aral Tankstelle Chamonix-Les Bossons", "lat": 45.9202, "lon": 6.8776},
+    {"name": "Total Tankstelle Megève-Giettaz", "lat": 45.8570, "lon": 6.6197},
+    {"name": "Esso Tankstelle Saint-Gervais-les-Bains-Le Fayet", "lat": 45.9087, "lon": 6.7098},
+    {"name": "Jet Tankstelle Morzine-Avoriaz", "lat": 46.1785, "lon": 6.7097},
+    {"name": "Shell Tankstelle Les Gets-Centre", "lat": 46.1574, "lon": 6.6659},
+    {"name": "BP Tankstelle Samoëns-Centre", "lat": 46.0835, "lon": 6.7192},
+    {"name": "Aral Tankstelle Taninges-Mieussy", "lat": 46.1098, "lon": 6.5916},
+]
+
+# ---------------------------------------------------------------------------
+# OSRM-configuratie
+# ---------------------------------------------------------------------------
+OSRM_SERVER = "https://router.project-osrm.org"
+OSRM_TIMEOUT = 30  # seconden
+
+
+# ---------------------------------------------------------------------------
+# Geocoding
+# ---------------------------------------------------------------------------
+NOMINATIM_UA = "og-routeplanner/2.0"
+
+_geolocator_osm = Nominatim(user_agent=NOMINATIM_UA, timeout=15)
+_geocode_osm = RateLimiter(
+    _geolocator_osm.geocode, min_delay_seconds=1, max_retries=2, error_wait_seconds=2.0
+)
+
+_geolocator_photon = Photon(user_agent=NOMINATIM_UA, timeout=15)
+_geocode_photon = RateLimiter(
+    _geolocator_photon.geocode, min_delay_seconds=1, max_retries=2, error_wait_seconds=2.0
+)
+
+
+@st.cache_data(ttl=24 * 3600, show_spinner=False)
+def geocode_address(address: str):
+    """Geeft (lat, lon) terug of None.  Accepteert ook directe 'lat,lon' invoer."""
+    addr = (address or "").strip()
+    if not addr:
+        return None
+
+    # Directe coordinaten
+    m = re.match(r"^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$", addr)
+    if m:
+        return (float(m.group(1)), float(m.group(2)))
+
+    # Nominatim
+    try:
+        loc = _geocode_osm(addr)
+        if loc:
+            return (loc.latitude, loc.longitude)
+    except (GeocoderUnavailable, GeocoderTimedOut, GeocoderServiceError):
+        pass
+
+    # Fallback: Photon
+    try:
+        loc = _geocode_photon(addr)
+        if loc:
+            return (loc.latitude, loc.longitude)
+    except (GeocoderUnavailable, GeocoderTimedOut, GeocoderServiceError):
+        pass
+
+    return None
+
+
+# ---------------------------------------------------------------------------
+# OSRM-hulpfuncties
+# ---------------------------------------------------------------------------
+
+def _osrm_route(waypoints: list[tuple]) -> dict | None:
+    """
+    Vraag een OSRM-route op voor een lijst van (lat, lon) waypoints.
+    Geeft het volledige routes[0]-object terug of None bij een fout.
+    """
+    coord_str = ";".join(f"{lon},{lat}" for lat, lon in waypoints)
+    url = (
+        f"{OSRM_SERVER}/route/v1/driving/{coord_str}"
+        "?overview=full&geometries=geojson"
+    )
+    try:
+        resp = requests.get(url, timeout=OSRM_TIMEOUT)
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("code") == "Ok" and data.get("routes"):
+            return data["routes"][0]
+    except requests.RequestException:
+        pass
+    return None
+
+
+def _route_length_km(geojson_coords: list) -> float:
+    """Berekent de totale lengte van een GeoJSON-polyline in km."""
+    total = 0.0
+    for i in range(1, len(geojson_coords)):
+        p1 = geojson_coords[i - 1]  # [lon, lat]
+        p2 = geojson_coords[i]
+        total += geodesic((p1[1], p1[0]), (p2[1], p2[0])).km
+    return total
+
+
+def _point_to_segment_distance_km(
+    px: float, py: float, ax: float, ay: float, bx: float, by: float
+) -> float:
+    """
+    Loodrechte afstand van punt P naar lijnsegment AB (in graden, benadering).
+    Geeft de afstand in km terug.
+    """
+    dx, dy = bx - ax, by - ay
+    if dx == 0 and dy == 0:
+        return geodesic((py, px), (ay, ax)).km
+    t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)))
+    closest = (ax + t * dx, ay + t * dy)
+    return geodesic((py, px), (closest[1], closest[0])).km
+
+
+def _min_distance_to_polyline_km(
+    station_lat: float, station_lon: float, coords: list
+) -> float:
+    """
+    Kleinste loodrechte afstand van een station tot een GeoJSON-polyline.
+    coords: lijst van [lon, lat]-punten.
+    """
+    min_dist = float("inf")
+    for i in range(len(coords) - 1):
+        a, b = coords[i], coords[i + 1]
+        d = _point_to_segment_distance_km(
+            station_lon, station_lat, a[0], a[1], b[0], b[1]
+        )
+        if d < min_dist:
+            min_dist = d
+    return min_dist
+
+
+# ---------------------------------------------------------------------------
+# Kern routelogica
+# ---------------------------------------------------------------------------
+
+def plan_route(
+    start: tuple,
+    end: tuple,
+    intermediate: list[tuple],
+    interval_km: int,
+    corridor_km: int,
+) -> dict | None:
+    """
+    Planningslogica:
+    1. Haal de basisroute op (start → [tussenstops] → eind).
+    2. Filter stations op corridorafstand langs de echte routegeometrie.
+    3. Loopt langs de polyline en selecteert de dichtstbijzijnde station
+       zodra de afstand het interval bereikt.
+    4. Bouwt een definitieve OSRM-route door alle waypoints.
+    5. Geeft een dict terug met alle info of None bij een fout.
+    """
+    base_waypoints = [start] + intermediate + [end]
+
+    # Stap 1: basisroute
+    base_route = _osrm_route(base_waypoints)
+    if base_route is None:
+        return None
+
+    base_coords = base_route["geometry"]["coordinates"]  # [[lon, lat], ...]
+
+    # Stap 2: corridorfilter op basis van echte routegeometrie
+    corridor_stations = [
+        s for s in tankstations
+        if _min_distance_to_polyline_km(s["lat"], s["lon"], base_coords) <= corridor_km
+    ]
+
+    # Stap 3: kies stops langs de route
+    selected_stops: list[dict] = []
+    used_names: set[str] = set()
+    accumulated_km = 0.0
+    last_coord = base_coords[0]
+
+    for coord in base_coords[1:]:
+        step_km = geodesic(
+            (last_coord[1], last_coord[0]), (coord[1], coord[0])
+        ).km
+        accumulated_km += step_km
+
+        if accumulated_km >= interval_km:
+            # Kies station dichtstbij dit punt op de route
+            available = [s for s in corridor_stations if s["name"] not in used_names]
+            if available:
+                closest = min(
+                    available,
+                    key=lambda s: geodesic(
+                        (coord[1], coord[0]), (s["lat"], s["lon"])
+                    ).km,
+                )
+                selected_stops.append(closest)
+                used_names.add(closest["name"])
+            else:
+                # Geen station beschikbaar: sla positie op als placeholder
+                selected_stops.append(
+                    {
+                        "name": "Geen OG-station beschikbaar",
+                        "lat": coord[1],
+                        "lon": coord[0],
+                    }
+                )
+            accumulated_km = 0.0
+
+        last_coord = coord
+
+    # Stap 4: definitieve OSRM-route met tankstops
+    stop_coords = [(s["lat"], s["lon"]) for s in selected_stops]
+    all_waypoints = [start] + intermediate + stop_coords + [end]
+    # Sorteer tussenstops op positie langs de route voor een logische volgorde
+    # (eenvoudige benadering: sorteer op cumulatieve afstand vanaf start)
+    def _dist_from_start(wp):
+        return geodesic(start, wp).km
+
+    interior = [start] + intermediate + stop_coords
+    interior_sorted = sorted(interior[1:], key=_dist_from_start)
+    final_waypoints = [start] + interior_sorted + [end]
+
+    final_route = _osrm_route(final_waypoints)
+    if final_route is None:
+        # Val terug op basisroute als de definitieve route mislukt
+        final_route = base_route
+
+    final_coords = final_route["geometry"]["coordinates"]
+    total_km = _route_length_km(final_coords)
+    # Duur in minuten (OSRM geeft seconden)
+    total_min = final_route.get("duration", 0) / 60
+
+    # Cumulatieve afstand per waypoint (voor CSV-export)
+    cumulative: list[float] = [0.0]
+    for i in range(1, len(final_coords)):
+        p1, p2 = final_coords[i - 1], final_coords[i]
+        cumulative.append(
+            cumulative[-1] + geodesic((p1[1], p1[0]), (p2[1], p2[0])).km
+        )
+
+    return {
+        "base_coords": base_coords,
+        "final_coords": final_coords,
+        "selected_stops": selected_stops,
+        "total_km": total_km,
+        "total_min": total_min,
+        "start": start,
+        "end": end,
+        "intermediate": intermediate,
+        "final_waypoints": final_waypoints,
+        "cumulative": cumulative,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Kaartweergave
+# ---------------------------------------------------------------------------
+
+def build_map(result: dict) -> folium.Map:
+    """Bouwt een folium-kaart met route, stops, start en eind."""
+    base_coords = result["base_coords"]
+    final_coords = result["final_coords"]
+    selected_stops = result["selected_stops"]
+    start = result["start"]
+    end = result["end"]
+
+    # Centreer op het midden van de route
+    mid_idx = len(final_coords) // 2
+    center = [final_coords[mid_idx][1], final_coords[mid_idx][0]]
+
+    m = folium.Map(location=center, zoom_start=6, tiles="CartoDB positron")
+
+    # Directe route als gestippelde lijn (referentie, geen stops)
+    base_latlng = [[c[1], c[0]] for c in base_coords]
+    folium.PolyLine(
+        base_latlng,
+        color="#aaaaaa",
+        weight=3,
+        dash_array="8 6",
+        tooltip="Directe route (zonder stops)",
+        opacity=0.7,
+    ).add_to(m)
+
+    # Werkelijke route met stops als volle lijn
+    final_latlng = [[c[1], c[0]] for c in final_coords]
+    folium.PolyLine(
+        final_latlng,
+        color="#1a73e8",
+        weight=5,
+        tooltip="Route met tankstops",
+        opacity=0.9,
+    ).add_to(m)
+
+    # Startmarker (groen)
+    folium.Marker(
+        location=[start[0], start[1]],
+        tooltip="<b>Start</b>",
+        icon=folium.Icon(color="green", icon="play", prefix="fa"),
+    ).add_to(m)
+
+    # Eindmarker (rood)
+    folium.Marker(
+        location=[end[0], end[1]],
+        tooltip="<b>Bestemming</b>",
+        icon=folium.Icon(color="red", icon="flag", prefix="fa"),
+    ).add_to(m)
+
+    # Tussenstops (blauw)
+    for i, wp in enumerate(result["intermediate"], 1):
+        folium.Marker(
+            location=[wp[0], wp[1]],
+            tooltip=f"<b>Tussenstop {i}</b>",
+            icon=folium.Icon(color="blue", icon="map-marker", prefix="fa"),
+        ).add_to(m)
+
+    # Tankstations
+    for idx, stop in enumerate(selected_stops, 1):
+        is_missing = stop["name"].startswith("Geen OG-station")
+        color = "orange" if not is_missing else "gray"
+        icon_name = "tint" if not is_missing else "exclamation"
+        folium.Marker(
+            location=[stop["lat"], stop["lon"]],
+            tooltip=f"<b>Tankstop {idx}</b><br>{stop['name']}",
+            popup=folium.Popup(
+                f"<b>Tankstop {idx}</b><br>{stop['name']}<br>"
+                f"Lat: {stop['lat']:.5f}, Lon: {stop['lon']:.5f}",
+                max_width=250,
+            ),
+            icon=folium.Icon(color=color, icon=icon_name, prefix="fa"),
+        ).add_to(m)
+
+    # Pas kaartgrenzen aan
+    all_points = base_latlng + [[stop["lat"], stop["lon"]] for stop in selected_stops]
+    if all_points:
+        lats = [p[0] for p in all_points]
+        lons = [p[1] for p in all_points]
+        m.fit_bounds([[min(lats), min(lons)], [max(lats), max(lons)]])
+
+    return m
+
+
+# ---------------------------------------------------------------------------
+# CSV-export
+# ---------------------------------------------------------------------------
+
+def build_csv(result: dict, route_name: str) -> bytes:
+    """Bouwt een CSV met alle waypoints (naam, lat, lon, cumulatieve afstand)."""
+    start = result["start"]
+    end = result["end"]
+    rows = [
+        {
+            "Naam": f"Start ({route_name})",
+            "Lat": start[0],
+            "Lon": start[1],
+            "Cumulatieve afstand (km)": 0.0,
+        }
+    ]
+    for i, wp in enumerate(result["intermediate"], 1):
+        rows.append(
+            {
+                "Naam": f"Tussenstop {i}",
+                "Lat": wp[0],
+                "Lon": wp[1],
+                "Cumulatieve afstand (km)": round(
+                    geodesic(start, wp).km, 1
+                ),
+            }
+        )
+    for i, stop in enumerate(result["selected_stops"], 1):
+        rows.append(
+            {
+                "Naam": f"Tankstop {i}: {stop['name']}",
+                "Lat": stop["lat"],
+                "Lon": stop["lon"],
+                "Cumulatieve afstand (km)": round(
+                    geodesic(start, (stop["lat"], stop["lon"])).km, 1
+                ),
+            }
+        )
+    rows.append(
+        {
+            "Naam": f"Bestemming ({route_name})",
+            "Lat": end[0],
+            "Lon": end[1],
+            "Cumulatieve afstand (km)": round(result["total_km"], 1),
+        }
+    )
+    df = pd.DataFrame(rows)
+    buf = io.StringIO()
+    df.to_csv(buf, index=False)
+    return buf.getvalue().encode("utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Streamlit UI
+# ---------------------------------------------------------------------------
+
+# Sidebar
+with st.sidebar:
+    try:
+        st.image("Alleen spark.png", width=60)
+    except Exception:
+        pass
+
+    st.title("OG Routeplanner")
+    st.markdown("Plan een rijroute met OG-tankstops langs de weg.")
+    st.divider()
+
+    st.subheader("Route-invoer")
+    start_address = st.text_input("Startadres", placeholder="bijv. Amsterdam, Nederland")
+    end_address = st.text_input("Eindadres", placeholder="bijv. Berlijn, Duitsland")
+
+    st.subheader("Optionele tussenstops")
+    mid1 = st.text_input("Tussenstop 1 (optioneel)", placeholder="")
+    mid2 = st.text_input("Tussenstop 2 (optioneel)", placeholder="")
+    mid3 = st.text_input("Tussenstop 3 (optioneel)", placeholder="")
+
+    st.divider()
+    st.subheader("Instellingen")
+    interval_km = st.slider(
+        "Afstand tussen tankstops (km)",
+        min_value=100,
+        max_value=500,
+        value=250,
+        step=25,
+    )
+    corridor_km = st.slider(
+        "Max. omweg vanaf route (km)",
+        min_value=5,
+        max_value=300,
+        value=50,
+        step=5,
+    )
+
+    route_name = st.text_input("Routenaam", value="Mijn Route")
+    st.divider()
+    generate_btn = st.button("Genereer route", type="primary", use_container_width=True)
+
+# Hoofdgebied
+st.markdown(
+    """
+    <style>
+    .summary-card {
+        background: #f0f4ff;
+        border-radius: 10px;
+        padding: 16px 24px;
+        margin-bottom: 16px;
+        display: flex;
+        gap: 40px;
+        flex-wrap: wrap;
+    }
+    .summary-metric { text-align: center; }
+    .summary-metric .value { font-size: 1.6rem; font-weight: 700; color: #1a73e8; }
+    .summary-metric .label { font-size: 0.82rem; color: #555; margin-top: 2px; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+if not generate_btn:
+    st.info(
+        "Vul een start- en eindadres in de zijbalk in en klik op **Genereer route**."
+    )
+    st.stop()
+
+# ---------------------------------------------------------------------------
+# Verwerking na klikken op de knop
+# ---------------------------------------------------------------------------
+
+errors: list[str] = []
+
+# Geocode startadres
+with st.spinner("Startadres opzoeken..."):
+    start_coord = geocode_address(start_address) if start_address.strip() else None
+if not start_coord:
+    errors.append(
+        f"Kon het startadres **\"{start_address}\"** niet vinden. "
+        "Probeer een andere schrijfwijze of gebruik 'lat,lon' notatie."
+    )
+
+# Geocode eindadres
+with st.spinner("Eindadres opzoeken..."):
+    end_coord = geocode_address(end_address) if end_address.strip() else None
+if not end_coord:
+    errors.append(
+        f"Kon het eindadres **\"{end_address}\"** niet vinden. "
+        "Probeer een andere schrijfwijze of gebruik 'lat,lon' notatie."
+    )
+
+# Geocode optionele tussenstops
+intermediate_coords: list[tuple] = []
+for idx, addr in enumerate([mid1, mid2, mid3], 1):
+    if addr and addr.strip():
+        with st.spinner(f"Tussenstop {idx} opzoeken..."):
+            coord = geocode_address(addr)
+        if coord:
+            intermediate_coords.append(coord)
+        else:
+            errors.append(
+                f"Kon tussenstop {idx} **\"{addr}\"** niet vinden. "
+                "Deze stop wordt overgeslagen."
+            )
+
+if errors:
+    for err in errors:
+        st.error(err)
+    if not start_coord or not end_coord:
+        st.stop()
+
+# Route plannen
+with st.spinner("Route berekenen via OSRM..."):
+    result = plan_route(
+        start_coord,
+        end_coord,
+        intermediate_coords,
+        interval_km,
+        corridor_km,
+    )
+
+if result is None:
+    st.error(
+        "Kon geen route berekenen. Controleer of de adressen bereikbaar zijn per auto "
+        "en of de OSRM-server beschikbaar is."
+    )
+    st.stop()
+
+# ---------------------------------------------------------------------------
+# Samenvattingskaart
+# ---------------------------------------------------------------------------
+stops = result["selected_stops"]
+n_stops = len(stops)
+total_km = result["total_km"]
+total_min = result["total_min"]
+hours = int(total_min // 60)
+minutes = int(total_min % 60)
+avg_interval = round(total_km / (n_stops + 1), 1) if n_stops >= 0 else total_km
+
+col_a, col_b, col_c, col_d = st.columns(4)
+col_a.metric("Totale afstand", f"{total_km:.0f} km")
+col_b.metric("Geschatte reistijd", f"{hours}u {minutes}m")
+col_c.metric("Aantal tankstops", str(n_stops))
+col_d.metric("Gem. km tussen stops", f"{avg_interval:.0f} km")
+
+st.divider()
+
+# ---------------------------------------------------------------------------
+# Kaart
+# ---------------------------------------------------------------------------
+with st.spinner("Kaart renderen..."):
+    folium_map = build_map(result)
+    st_folium(folium_map, use_container_width=True, height=540, returned_objects=[])
+
+st.divider()
+
+# ---------------------------------------------------------------------------
+# Stopdetails in uitklapbare secties
+# ---------------------------------------------------------------------------
+if stops:
+    st.subheader(f"Tankstops ({n_stops})")
+    for i, stop in enumerate(stops, 1):
+        label = f"Stop {i}: {stop['name']}"
+        with st.expander(label):
+            col1, col2 = st.columns(2)
+            col1.markdown(f"**Naam:** {stop['name']}")
+            col2.markdown(f"**Coordinaten:** {stop['lat']:.5f}, {stop['lon']:.5f}")
+            dist_from_start = geodesic(
+                start_coord, (stop["lat"], stop["lon"])
+            ).km
+            st.caption(f"Ca. {dist_from_start:.0f} km van het startadres (vogelvlucht)")
+else:
+    st.info("Geen tankstops nodig voor deze route op het gekozen interval.")
+
+# ---------------------------------------------------------------------------
+# CSV-download
+# ---------------------------------------------------------------------------
+st.divider()
+csv_bytes = build_csv(result, route_name)
+st.download_button(
+    label="Download route als CSV",
+    data=csv_bytes,
+    file_name=f"{route_name.replace(' ', '_')}_route.csv",
+    mime="text/csv",
+    use_container_width=False,
+)
