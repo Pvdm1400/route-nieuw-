@@ -356,6 +356,77 @@ tankstations = [
 ]
 
 # ---------------------------------------------------------------------------
+# Brandstofdata — Bio-CNG (OG Clean Fuels) vs Diesel
+# Bron verbruik/CO₂: "Kopie van Kopieci.xlsx" — Visualisation (EN)
+# Bron prijzen diesel: EC Weekly Oil Bulletin (feb 2026)
+# Bron prijzen CNG: OG Clean Fuels tarieven 2026
+# ---------------------------------------------------------------------------
+
+# Verbruik per 100 km (vrachtwagen)
+CNG_VERBRUIK_KG_PER_100KM    = 30.0   # kg/100km
+DIESEL_VERBRUIK_L_PER_100KM  = 33.0   # liter/100km
+
+# CO₂-emissie per 100 km
+# Bio-CNG OG Clean Fuels is CO₂-negatief (CI-score: -102 gCO₂e/MJ)
+CO2_CNG_KG_PER_100KM         = -153.0   # kgCO₂e/100km (negatief = CO₂-positief)
+CO2_DIESEL_KG_PER_100KM      =  111.79  # kgCO₂/100km
+
+# CNG-prijzen OG Clean Fuels (€/kg)
+# Zweden: 30.29 SEK/kg ÷ koers 11.3 SEK/€ ≈ €2.68/kg
+CNG_PRIJS = {
+    "🇳🇱 Nederland": 1.620,
+    "🇩🇪 Duitsland":  1.499,
+    "🇫🇷 Frankrijk":  1.754,
+    "🇮🇹 Italië":     1.429,
+    "🇸🇪 Zweden":     round(30.29 / 11.3, 3),  # ≈ €2.68/kg
+}
+
+# Dieselprijzen feb 2026 incl. BTW + accijns (€/liter)
+DIESEL_PRIJS = {
+    "🇳🇱 Nederland": 1.873,
+    "🇩🇪 Duitsland":  1.720,
+    "🇫🇷 Frankrijk":  1.640,
+    "🇮🇹 Italië":     1.640,
+    "🇸🇪 Zweden":     1.740,
+}
+
+LANDEN = list(CNG_PRIJS.keys())
+
+
+def bereken_brandstof(total_km: float, land: str) -> dict:
+    """Berekent brandstofkosten en CO₂-vergelijking voor Bio-CNG vs Diesel."""
+    cng_p    = CNG_PRIJS[land]
+    diesel_p = DIESEL_PRIJS[land]
+
+    cng_kg   = total_km / 100 * CNG_VERBRUIK_KG_PER_100KM
+    diesel_l = total_km / 100 * DIESEL_VERBRUIK_L_PER_100KM
+
+    cng_kosten    = cng_kg   * cng_p
+    diesel_kosten = diesel_l * diesel_p
+    besparing     = diesel_kosten - cng_kosten
+    besparing_pct = (besparing / diesel_kosten * 100) if diesel_kosten else 0
+
+    co2_cng    = total_km / 100 * CO2_CNG_KG_PER_100KM    # negatief getal
+    co2_diesel = total_km / 100 * CO2_DIESEL_KG_PER_100KM
+    co2_totaal_voordeel = co2_diesel - co2_cng             # altijd positief
+
+    return {
+        "cng_kg":            cng_kg,
+        "diesel_l":          diesel_l,
+        "cng_kosten":        cng_kosten,
+        "diesel_kosten":     diesel_kosten,
+        "besparing":         besparing,
+        "besparing_pct":     besparing_pct,
+        "co2_cng":           co2_cng,
+        "co2_diesel":        co2_diesel,
+        "co2_voordeel":      co2_totaal_voordeel,
+        "co2_voordeel_pct":  (co2_totaal_voordeel / co2_diesel * 100) if co2_diesel else 0,
+        "cng_prijs":         cng_p,
+        "diesel_prijs":      diesel_p,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Snelle haversine (vervangt geopy.geodesic voor interne berekeningen)
 # ---------------------------------------------------------------------------
 def _hav(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -713,6 +784,19 @@ with st.sidebar:
     route_name  = st.text_input("Routenaam", value="Mijn Route")
 
     st.divider()
+    st.markdown("**Brandstofprijzen**")
+    gekozen_land = st.selectbox(
+        "Land voor prijsberekening",
+        LANDEN,
+        index=0,
+        help="Selecteer het primaire land van de route voor de juiste CNG- en dieselprijs.",
+    )
+    st.caption(
+        f"CNG (OG): **€ {CNG_PRIJS[gekozen_land]:.3f}/kg** &nbsp;·&nbsp; "
+        f"Diesel: **€ {DIESEL_PRIJS[gekozen_land]:.3f}/L**"
+    )
+
+    st.divider()
     generate_btn = st.button("⛽  Genereer route", type="primary", use_container_width=True)
 
 # ── Hero ────────────────────────────────────────────────────────────────────
@@ -806,6 +890,85 @@ st.markdown(f"""
     <div class="icon">📍</div>
     <div class="val">{avg_km} km</div>
     <div class="lbl">Gem. interval</div>
+  </div>
+</div>
+""", unsafe_allow_html=True)
+
+# ── CO₂ & Kostenvergelijking ──────────────────────────────────────────────────
+bf = bereken_brandstof(total_km, gekozen_land)
+
+besparing_str   = f"€ {bf['besparing']:,.0f}".replace(",", ".")
+diesel_k_str    = f"€ {bf['diesel_kosten']:,.0f}".replace(",", ".")
+cng_k_str       = f"€ {bf['cng_kosten']:,.0f}".replace(",", ".")
+co2_saved_ton   = bf["co2_voordeel"] / 1000
+co2_diesel_ton  = bf["co2_diesel"] / 1000
+
+# CO₂ is negatief voor Bio-CNG — frame dit als "CO₂-negatief"
+co2_cng_label = (
+    f"−{abs(bf['co2_cng']):.0f} kg CO₂e (CO₂-negatief)"
+    if bf["co2_cng"] < 0
+    else f"{bf['co2_cng']:.0f} kg CO₂e"
+)
+
+st.markdown(f"""
+<hr style="border-color:#1e3a52;margin:8px 0 20px"/>
+<div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+  <div style="font-size:1.5rem">🌿</div>
+  <div style="font-size:1.1rem;font-weight:700;color:#e8f4fd">
+    Bio-CNG vs Diesel — brandstofkosten & CO₂
+    <span style="font-size:.8rem;font-weight:400;color:#7fa8c9;margin-left:8px">
+      {gekozen_land} · {total_km:.0f} km
+    </span>
+  </div>
+</div>
+
+<div class="metric-row">
+  <div class="metric-card" style="border-top:3px solid #43a047">
+    <div class="icon">💶</div>
+    <div class="val" style="color:#66bb6a">{besparing_str}</div>
+    <div class="lbl">Kostenbesparing CNG vs Diesel</div>
+  </div>
+  <div class="metric-card" style="border-top:3px solid #43a047">
+    <div class="icon">📉</div>
+    <div class="val" style="color:#66bb6a">{bf['besparing_pct']:.0f}%</div>
+    <div class="lbl">Goedkoper dan diesel</div>
+  </div>
+  <div class="metric-card" style="border-top:3px solid #26a69a">
+    <div class="icon">🌍</div>
+    <div class="val" style="color:#4dd0e1">{co2_saved_ton:.1f} ton</div>
+    <div class="lbl">CO₂-voordeel t.o.v. diesel</div>
+  </div>
+  <div class="metric-card" style="border-top:3px solid #26a69a">
+    <div class="icon">♻️</div>
+    <div class="val" style="color:#4dd0e1">{bf['co2_voordeel_pct']:.0f}%+</div>
+    <div class="lbl">CO₂-reductie (Bio-CNG is CO₂-negatief)</div>
+  </div>
+</div>
+
+<div style="background:#0d2137;border:1px solid #1e3a52;border-radius:12px;
+            padding:18px 22px;margin-bottom:20px;display:grid;
+            grid-template-columns:1fr 1fr;gap:16px">
+  <div>
+    <div style="color:#7fa8c9;font-size:.75rem;text-transform:uppercase;letter-spacing:.7px;margin-bottom:8px">
+      🔵 Diesel (referentie)
+    </div>
+    <div style="color:#cdd9e5;font-size:.9rem;line-height:1.8">
+      Verbruik: <b>{bf['diesel_l']:.0f} liter</b>
+      @ € {bf['diesel_prijs']:.3f}/L<br>
+      Kosten: <b style="color:#ef9a9a">{diesel_k_str}</b><br>
+      CO₂: <b style="color:#ef9a9a">{co2_diesel_ton:.1f} ton CO₂</b>
+    </div>
+  </div>
+  <div>
+    <div style="color:#7fa8c9;font-size:.75rem;text-transform:uppercase;letter-spacing:.7px;margin-bottom:8px">
+      🟢 Bio-CNG OG Clean Fuels
+    </div>
+    <div style="color:#cdd9e5;font-size:.9rem;line-height:1.8">
+      Verbruik: <b>{bf['cng_kg']:.0f} kg</b>
+      @ € {bf['cng_prijs']:.3f}/kg<br>
+      Kosten: <b style="color:#a5d6a7">{cng_k_str}</b><br>
+      CO₂: <b style="color:#a5d6a7">{co2_cng_label}</b>
+    </div>
   </div>
 </div>
 """, unsafe_allow_html=True)
