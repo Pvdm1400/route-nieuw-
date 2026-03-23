@@ -1035,7 +1035,7 @@ with st.expander("📊 Brandstofkosten per tankstop uitsplitsen", expanded=True)
     header = (
         "<div style='display:grid;grid-template-columns:2fr 1.2fr .8fr 1fr 1fr 1fr;"
         "gap:6px;padding:6px 10px;background:#F18700;border-radius:8px 8px 0 0;"
-        "font-size:.72rem;color:#888888;text-transform:uppercase;letter-spacing:.6px;'>"
+        "font-size:.72rem;color:#FFFFF;text-transform:uppercase;letter-spacing:.6px;'>"
         "<div>Locatie</div><div>Land</div><div>Segment</div>"
         "<div>Diesel</div><div>Bio-CNG</div><div>Besparing</div></div>"
     )
@@ -1068,8 +1068,8 @@ with st.expander("📊 Brandstofkosten per tankstop uitsplitsen", expanded=True)
         f"</div>"
     )
     st.markdown(
-        f"<div style='border:1px solid #2e2e2e;border-radius:9px;overflow:hidden;"
-        f"margin-bottom:8px'>{header}{rows_html}</div>",
+       f"<div style='border:1px solid #2e2e2e;border-radius:9px;overflow:hidden;
+margin-bottom:8px;background:#8888;'>{header}{rows_html}</div>",
         unsafe_allow_html=True,
     )
 
