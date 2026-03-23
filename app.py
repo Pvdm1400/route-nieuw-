@@ -1,6 +1,7 @@
 import re
 import io
 import math
+import base64
 
 import streamlit as st
 import requests
@@ -467,6 +468,20 @@ def bereken_brandstof_per_route(tankevents: list) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Logo helper
+# ---------------------------------------------------------------------------
+def _logo_b64() -> str:
+    """Leest logo.svg en geeft base64-string terug (gecached via @st.cache_data)."""
+    import os
+    logo_path = os.path.join(os.path.dirname(__file__), "logo.svg")
+    try:
+        with open(logo_path, "rb") as f:
+            return base64.b64encode(f.read()).decode()
+    except Exception:
+        return ""
+
+
+# ---------------------------------------------------------------------------
 # Snelle haversine (vervangt geopy.geodesic voor interne berekeningen)
 # ---------------------------------------------------------------------------
 def _hav(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -641,11 +656,11 @@ def build_map(result: dict) -> folium.Map:
                    tiles="CartoDB positron", prefer_canvas=True)
 
     base_ll = [[c[1], c[0]] for c in base_coords]
-    folium.PolyLine(base_ll, color="#b0bec5", weight=2, dash_array="6 5",
+    folium.PolyLine(base_ll, color="#555555", weight=2, dash_array="6 5",
                     tooltip="Directe route", opacity=0.6).add_to(m)
 
     final_ll = [[c[1], c[0]] for c in final_coords]
-    folium.PolyLine(final_ll, color="#00897b", weight=5,
+    folium.PolyLine(final_ll, color="#F18700", weight=5,
                     tooltip="Route met tankstops", opacity=0.95).add_to(m)
 
     # Start / eind
@@ -710,78 +725,86 @@ def build_csv(result: dict, route_name: str) -> bytes:
 st.set_page_config(page_title="OG Routeplanner", page_icon="⛽", layout="wide",
                    initial_sidebar_state="expanded")
 
-# ── Global CSS ──────────────────────────────────────────────────────────────
+# ── Global CSS — OG Clean Fuels huisstijl ───────────────────────────────────
+# Primaire kleur: #F18700 (OG oranje) · Font: Inter / Open Sans
 st.markdown("""
 <style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+
 /* ── Achtergrond ── */
-[data-testid="stAppViewContainer"] { background: #0f1923; }
+[data-testid="stAppViewContainer"] {
+    background: #111111;
+    font-family: 'Inter', 'Open Sans', sans-serif;
+}
 [data-testid="stHeader"] { background: transparent; }
 
 /* ── Sidebar ── */
 [data-testid="stSidebar"] {
-    background: linear-gradient(160deg, #0d2137 0%, #112233 100%);
-    border-right: 1px solid #1e3a52;
+    background: linear-gradient(160deg, #1a1a1a 0%, #212121 100%);
+    border-right: 1px solid #2e2e2e;
 }
-[data-testid="stSidebar"] * { color: #cdd9e5 !important; }
+[data-testid="stSidebar"] * { color: #cccccc !important; }
 [data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2,
-[data-testid="stSidebar"] h3 { color: #e8f4fd !important; }
+[data-testid="stSidebar"] h3 { color: #ffffff !important; }
 [data-testid="stSidebar"] .stTextInput input {
-    background: #0a1929 !important;
-    border: 1px solid #1e3a52 !important;
-    border-radius: 8px !important;
-    color: #e8f4fd !important;
+    background: #0f0f0f !important;
+    border: 1px solid #333333 !important;
+    border-radius: 5px !important;
+    color: #ffffff !important;
 }
 [data-testid="stSidebar"] .stSlider [data-baseweb="slider"] { margin-top: 4px; }
 
 /* ── Primaire knop ── */
 button[kind="primary"] {
-    background: linear-gradient(135deg, #00897b, #00acc1) !important;
+    background: #F18700 !important;
     border: none !important;
-    border-radius: 10px !important;
+    border-radius: 5px !important;
     font-weight: 700 !important;
     letter-spacing: 0.5px !important;
     color: #fff !important;
-    box-shadow: 0 4px 14px rgba(0,137,123,.45) !important;
+    box-shadow: 0 4px 14px rgba(241,135,0,.4) !important;
     transition: transform .15s, box-shadow .15s !important;
 }
 button[kind="primary"]:hover {
+    background: #d97a00 !important;
     transform: translateY(-2px) !important;
-    box-shadow: 0 6px 20px rgba(0,137,123,.6) !important;
+    box-shadow: 0 6px 20px rgba(241,135,0,.55) !important;
 }
 
 /* ── Metriekkaarten ── */
 .metric-row { display: flex; gap: 16px; margin: 20px 0 24px; flex-wrap: wrap; }
 .metric-card {
     flex: 1; min-width: 140px;
-    background: linear-gradient(135deg, #112233, #0d2137);
-    border: 1px solid #1e3a52;
-    border-radius: 14px;
+    background: #1a1a1a;
+    border: 1px solid #2e2e2e;
+    border-radius: 10px;
     padding: 18px 20px;
     text-align: center;
 }
 .metric-card .icon { font-size: 1.6rem; margin-bottom: 6px; }
-.metric-card .val  { font-size: 1.75rem; font-weight: 800; color: #00bcd4; line-height:1; }
-.metric-card .lbl  { font-size: 0.75rem; color: #7fa8c9; margin-top: 5px; text-transform: uppercase; letter-spacing: .8px; }
+.metric-card .val  { font-size: 1.75rem; font-weight: 800; color: #F18700; line-height:1; }
+.metric-card .lbl  { font-size: 0.75rem; color: #888888; margin-top: 5px; text-transform: uppercase; letter-spacing: .8px; }
 
 /* ── Hero banner ── */
 .hero {
-    background: linear-gradient(135deg, #00695c 0%, #006064 50%, #01579b 100%);
-    border-radius: 16px;
+    background: linear-gradient(135deg, #1c1000 0%, #2d1800 60%, #1c1000 100%);
+    border-left: 5px solid #F18700;
+    border-radius: 10px;
     padding: 28px 36px;
     margin-bottom: 24px;
     display: flex;
     align-items: center;
     gap: 20px;
 }
-.hero-title { font-size: 1.7rem; font-weight: 800; color: #fff; margin: 0; }
-.hero-sub   { font-size: 0.9rem; color: #b2ebf2; margin: 4px 0 0; }
+.hero-title { font-size: 1.7rem; font-weight: 800; color: #ffffff; margin: 0; }
+.hero-sub   { font-size: 0.9rem; color: #ffd699; margin: 4px 0 0; }
 
 /* ── Stop-kaartjes ── */
 .stop-card {
-    background: #112233;
-    border: 1px solid #1e3a52;
-    border-left: 4px solid #00897b;
-    border-radius: 10px;
+    background: #1a1a1a;
+    border: 1px solid #2e2e2e;
+    border-left: 4px solid #F18700;
+    border-radius: 5px;
     padding: 14px 18px;
     margin-bottom: 10px;
     display: flex;
@@ -789,7 +812,7 @@ button[kind="primary"]:hover {
     gap: 16px;
 }
 .stop-badge {
-    background: #00897b;
+    background: #F18700;
     color: #fff;
     font-weight: 700;
     font-size: .85rem;
@@ -798,26 +821,30 @@ button[kind="primary"]:hover {
     display: flex; align-items: center; justify-content: center;
     flex-shrink: 0;
 }
-.stop-name  { color: #e8f4fd; font-weight: 600; font-size: .95rem; }
-.stop-coord { color: #7fa8c9; font-size: .78rem; margin-top: 2px; }
+.stop-name  { color: #ffffff; font-weight: 600; font-size: .95rem; }
+.stop-coord { color: #888888; font-size: .78rem; margin-top: 2px; }
 
 /* ── Divider ── */
-hr { border-color: #1e3a52 !important; }
+hr { border-color: #2e2e2e !important; }
 
 /* ── Info/fout ── */
-[data-testid="stAlert"] { border-radius: 10px !important; }
+[data-testid="stAlert"] { border-radius: 5px !important; }
 
 /* ── Algemene tekst ── */
-p, li, label { color: #cdd9e5 !important; }
-h1, h2, h3 { color: #e8f4fd !important; }
+p, li, label { color: #cccccc !important; }
+h1, h2, h3 { color: #ffffff !important; }
 </style>
 """, unsafe_allow_html=True)
 
 # ── Sidebar ─────────────────────────────────────────────────────────────────
 with st.sidebar:
-    try:
-        st.image("Alleen spark.png", width=56)
-    except Exception:
+    _logo = _logo_b64()
+    if _logo:
+        st.markdown(
+            f'<img src="data:image/svg+xml;base64,{_logo}" width="70" style="margin-bottom:8px;display:block">',
+            unsafe_allow_html=True,
+        )
+    else:
         st.markdown("### ⛽")
 
     st.markdown("## OG Routeplanner")
@@ -843,9 +870,14 @@ with st.sidebar:
     generate_btn = st.button("⛽  Genereer route", type="primary", use_container_width=True)
 
 # ── Hero ────────────────────────────────────────────────────────────────────
-st.markdown("""
+_logo_hero = _logo_b64()
+_logo_img = (
+    f'<img src="data:image/svg+xml;base64,{_logo_hero}" width="56" style="flex-shrink:0">'
+    if _logo_hero else '<span style="font-size:3rem">⛽</span>'
+)
+st.markdown(f"""
 <div class="hero">
-  <div style="font-size:3rem">🗺️</div>
+  {_logo_img}
   <div>
     <p class="hero-title">OG Routeplanner</p>
     <p class="hero-sub">Optimale rijroutes met biogastankstops in NL · DE · FR · SE</p>
@@ -855,11 +887,11 @@ st.markdown("""
 
 if not generate_btn:
     st.markdown("""
-    <div style="background:#112233;border:1px solid #1e3a52;border-radius:12px;
-         padding:32px;text-align:center;color:#7fa8c9;">
+    <div style="background:#1a1a1a;border:1px solid #2e2e2e;border-radius:10px;
+         padding:32px;text-align:center;color:#888888;">
       <div style="font-size:2.5rem;margin-bottom:12px">👈</div>
-      <div style="font-size:1.1rem;color:#cdd9e5;font-weight:600;">
-        Vul een start- en eindadres in en klik op <b style="color:#00bcd4">Genereer route</b>
+      <div style="font-size:1.1rem;color:#cccccc;font-weight:600;">
+        Vul een start- en eindadres in en klik op <b style="color:#F18700">Genereer route</b>
       </div>
     </div>
     """, unsafe_allow_html=True)
@@ -963,35 +995,35 @@ cng_tot_str    = f"€ {bf['totaal_cng']:,.0f}".replace(",", ".")
 co2_saved_ton  = bf["co2_voordeel"] / 1000
 
 st.markdown(f"""
-<hr style="border-color:#1e3a52;margin:8px 0 20px"/>
+<hr style="border-color:#2e2e2e;margin:8px 0 20px"/>
 <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
   <div style="font-size:1.5rem">🌿</div>
-  <div style="font-size:1.1rem;font-weight:700;color:#e8f4fd">
+  <div style="font-size:1.1rem;font-weight:700;color:#ffffff;font-family:'Inter',sans-serif">
     Bio-CNG vs Diesel — brandstofkosten &amp; CO₂
-    <span style="font-size:.8rem;font-weight:400;color:#7fa8c9;margin-left:8px">
+    <span style="font-size:.8rem;font-weight:400;color:#888888;margin-left:8px">
       per land berekend · {total_km:.0f} km totaal
     </span>
   </div>
 </div>
 <div class="metric-row">
-  <div class="metric-card" style="border-top:3px solid #43a047">
+  <div class="metric-card" style="border-top:3px solid #F18700">
     <div class="icon">💶</div>
-    <div class="val" style="color:#66bb6a">{besparing_str}</div>
+    <div class="val" style="color:#F18700">{besparing_str}</div>
     <div class="lbl">Kostenbesparing CNG vs Diesel</div>
   </div>
-  <div class="metric-card" style="border-top:3px solid #43a047">
+  <div class="metric-card" style="border-top:3px solid #F18700">
     <div class="icon">📉</div>
-    <div class="val" style="color:#66bb6a">{bf['besparing_pct']:.0f}%</div>
+    <div class="val" style="color:#F18700">{bf['besparing_pct']:.0f}%</div>
     <div class="lbl">Goedkoper dan diesel</div>
   </div>
-  <div class="metric-card" style="border-top:3px solid #26a69a">
+  <div class="metric-card" style="border-top:3px solid #d97a00">
     <div class="icon">🌍</div>
-    <div class="val" style="color:#4dd0e1">{co2_saved_ton:.1f} ton</div>
+    <div class="val" style="color:#ffc04d">{co2_saved_ton:.1f} ton</div>
     <div class="lbl">CO₂-voordeel t.o.v. diesel</div>
   </div>
-  <div class="metric-card" style="border-top:3px solid #26a69a">
+  <div class="metric-card" style="border-top:3px solid #d97a00">
     <div class="icon">♻️</div>
-    <div class="val" style="color:#4dd0e1">{bf['co2_voordeel_pct']:.0f}%+</div>
+    <div class="val" style="color:#ffc04d">{bf['co2_voordeel_pct']:.0f}%+</div>
     <div class="lbl">CO₂-reductie (Bio-CNG is CO₂-negatief)</div>
   </div>
 </div>
@@ -1002,8 +1034,8 @@ with st.expander("📊 Brandstofkosten per tankstop uitsplitsen", expanded=True)
     # Tabelkop
     header = (
         "<div style='display:grid;grid-template-columns:2fr 1.2fr .8fr 1fr 1fr 1fr;"
-        "gap:6px;padding:6px 10px;background:#0a1929;border-radius:8px 8px 0 0;"
-        "font-size:.72rem;color:#7fa8c9;text-transform:uppercase;letter-spacing:.6px;'>"
+        "gap:6px;padding:6px 10px;background:#0f0f0f;border-radius:8px 8px 0 0;"
+        "font-size:.72rem;color:#888888;text-transform:uppercase;letter-spacing:.6px;'>"
         "<div>Locatie</div><div>Land</div><div>Segment</div>"
         "<div>Diesel</div><div>Bio-CNG</div><div>Besparing</div></div>"
     )
@@ -1012,31 +1044,31 @@ with st.expander("📊 Brandstofkosten per tankstop uitsplitsen", expanded=True)
         bes = ev["diesel_kosten"] - ev["cng_kosten"]
         rows_html += (
             f"<div style='display:grid;grid-template-columns:2fr 1.2fr .8fr 1fr 1fr 1fr;"
-            f"gap:6px;padding:8px 10px;border-bottom:1px solid #1e3a52;"
-            f"font-size:.82rem;color:#cdd9e5;'>"
-            f"<div style='color:#e8f4fd;font-weight:500'>{ev['label']}</div>"
+            f"gap:6px;padding:8px 10px;border-bottom:1px solid #2e2e2e;"
+            f"font-size:.82rem;color:#cccccc;'>"
+            f"<div style='color:#ffffff;font-weight:500'>{ev['label']}</div>"
             f"<div>{ev['land']}</div>"
             f"<div>{ev['segment_km']:.0f} km</div>"
-            f"<div style='color:#ef9a9a'>€ {ev['diesel_kosten']:.0f}<br>"
-            f"<span style='font-size:.7rem;color:#7fa8c9'>{ev['diesel_l']:.0f}L @ €{ev['diesel_prijs']:.3f}</span></div>"
-            f"<div style='color:#a5d6a7'>€ {ev['cng_kosten']:.0f}<br>"
-            f"<span style='font-size:.7rem;color:#7fa8c9'>{ev['cng_kg']:.0f}kg @ €{ev['cng_prijs']:.3f}</span></div>"
-            f"<div style='color:#66bb6a;font-weight:700'>€ {bes:.0f}</div>"
+            f"<div style='color:#ff8a65'>€ {ev['diesel_kosten']:.0f}<br>"
+            f"<span style='font-size:.7rem;color:#888888'>{ev['diesel_l']:.0f}L @ €{ev['diesel_prijs']:.3f}</span></div>"
+            f"<div style='color:#F18700'>€ {ev['cng_kosten']:.0f}<br>"
+            f"<span style='font-size:.7rem;color:#888888'>{ev['cng_kg']:.0f}kg @ €{ev['cng_prijs']:.3f}</span></div>"
+            f"<div style='color:#ffc04d;font-weight:700'>€ {bes:.0f}</div>"
             f"</div>"
         )
     # Totaalrij
     rows_html += (
         f"<div style='display:grid;grid-template-columns:2fr 1.2fr .8fr 1fr 1fr 1fr;"
-        f"gap:6px;padding:10px;background:#112233;border-radius:0 0 8px 8px;"
-        f"font-size:.85rem;font-weight:700;color:#e8f4fd;'>"
+        f"gap:6px;padding:10px;background:#1a1a1a;border-radius:0 0 8px 8px;"
+        f"font-size:.85rem;font-weight:700;color:#ffffff;'>"
         f"<div>Totaal</div><div></div><div>{total_km:.0f} km</div>"
-        f"<div style='color:#ef9a9a'>{diesel_tot_str}</div>"
-        f"<div style='color:#a5d6a7'>{cng_tot_str}</div>"
-        f"<div style='color:#66bb6a'>{besparing_str}</div>"
+        f"<div style='color:#ff8a65'>{diesel_tot_str}</div>"
+        f"<div style='color:#F18700'>{cng_tot_str}</div>"
+        f"<div style='color:#ffc04d'>{besparing_str}</div>"
         f"</div>"
     )
     st.markdown(
-        f"<div style='border:1px solid #1e3a52;border-radius:9px;overflow:hidden;"
+        f"<div style='border:1px solid #2e2e2e;border-radius:9px;overflow:hidden;"
         f"margin-bottom:8px'>{header}{rows_html}</div>",
         unsafe_allow_html=True,
     )
@@ -1051,7 +1083,7 @@ if stops:
     stop_html = ""
     for i, s in enumerate(stops, 1):
         missing = s["name"].startswith("Geen OG")
-        badge_color = "#e57373" if missing else "#00897b"
+        badge_color = "#e57373" if missing else "#F18700"
         dist = round(_hav(start_coord[0], start_coord[1], s["lat"], s["lon"]))
         stop_html += f"""
         <div class="stop-card" style="border-left-color:{badge_color}">
