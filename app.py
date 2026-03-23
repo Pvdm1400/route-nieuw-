@@ -750,7 +750,7 @@ st.markdown("""
     background: ##faa332 !important;
     border: 1px solid #333333 !important;
     border-radius: 5px !important;
-    color: ##0a0000 !important;
+    color: #212121 !important;
 }
 [data-testid="stSidebar"] .stSlider [data-baseweb="slider"] { margin-top: 4px; }
 
