@@ -733,7 +733,7 @@ st.markdown("""
 
 /* ── Achtergrond ── */
 [data-testid="stAppViewContainer"] {
-    background: #13A538;
+    background: linear-gradient(160deg, #1a1a1a 0%, #13A538 100%);
     font-family: 'Inter', 'Open Sans', sans-serif;
 }
 [data-testid="stHeader"] { background: transparent; }
