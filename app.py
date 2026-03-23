@@ -745,7 +745,7 @@ st.markdown("""
 }
 [data-testid="stSidebar"] * { color: #cccccc !important; }
 [data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2,
-[data-testid="stSidebar"] h3 { color: #ffffff !important; }
+[data-testid="stSidebar"] h3 { color: ##0a0000 !important; }
 [data-testid="stSidebar"] .stTextInput input {
     background: ##faa332 !important;
     border: 1px solid #333333 !important;
