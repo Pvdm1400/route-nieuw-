@@ -1068,8 +1068,8 @@ with st.expander("📊 Brandstofkosten per tankstop uitsplitsen", expanded=True)
         f"</div>"
     )
     st.markdown(
-       f"<div style='border:1px solid #2e2e2e;border-radius:9px;overflow:hidden;
-margin-bottom:8px;background:#8888;'>{header}{rows_html}</div>",
+        f"<div style='border:1px solid #2e2e2e;border-radius:9px;overflow:hidden;
+        margin-bottom:8px;background:#8888;'>{header}{rows_html}</div>",
         unsafe_allow_html=True,
     )
 
