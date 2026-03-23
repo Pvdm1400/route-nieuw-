@@ -1008,22 +1008,22 @@ st.markdown(f"""
 <div class="metric-row">
   <div class="metric-card" style="border-top:3px solid #13a538">
     <div class="icon">💶</div>
-    <div class="val" style="color:#F18700">{besparing_str}</div>
+    <div class="val" style="color:#13a538">{besparing_str}</div>
     <div class="lbl">Kostenbesparing CNG vs Diesel</div>
   </div>
   <div class="metric-card" style="border-top:3px solid #13a538">
     <div class="icon">📉</div>
-    <div class="val" style="color:#F18700">{bf['besparing_pct']:.0f}%</div>
+    <div class="val" style="color:#13a538">{bf['besparing_pct']:.0f}%</div>
     <div class="lbl">Goedkoper dan diesel</div>
   </div>
   <div class="metric-card" style="border-top:3px solid #13a538">
     <div class="icon">🌍</div>
-    <div class="val" style="color:#ffc04d">{co2_saved_ton:.1f} ton</div>
+    <div class="val" style="color:#13a538">{co2_saved_ton:.1f} ton</div>
     <div class="lbl">CO₂-voordeel t.o.v. diesel</div>
   </div>
   <div class="metric-card" style="border-top:3px solid #13a538">
     <div class="icon">♻️</div>
-    <div class="val" style="color:#ffc04d">{bf['co2_voordeel_pct']:.0f}%+</div>
+    <div class="val" style="color:#13a538">{bf['co2_voordeel_pct']:.0f}%+</div>
     <div class="lbl">CO₂-reductie (Bio-CNG is CO₂-negatief)</div>
   </div>
 </div>
