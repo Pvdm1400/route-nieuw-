@@ -740,7 +740,7 @@ st.markdown("""
 
 /* ── Sidebar ── */
 [data-testid="stSidebar"] {
-    background: linear-gradient(160deg, #1a1a1a 0%, #212121 100%);
+    background: linear-gradient(160deg, #1a1a1a 0%, #13A538 100%);
     border-right: 1px solid #2e2e2e;
 }
 [data-testid="stSidebar"] * { color: #cccccc !important; }
