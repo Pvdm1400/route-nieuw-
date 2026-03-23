@@ -393,36 +393,76 @@ DIESEL_PRIJS = {
 LANDEN = list(CNG_PRIJS.keys())
 
 
-def bereken_brandstof(total_km: float, land: str) -> dict:
-    """Berekent brandstofkosten en CO₂-vergelijking voor Bio-CNG vs Diesel."""
-    cng_p    = CNG_PRIJS[land]
-    diesel_p = DIESEL_PRIJS[land]
+# Landcodes (Nominatim) → sleutel in CNG_PRIJS / DIESEL_PRIJS
+COUNTRY_CODE_MAP = {
+    "nl": "🇳🇱 Nederland",
+    "de": "🇩🇪 Duitsland",
+    "fr": "🇫🇷 Frankrijk",
+    "it": "🇮🇹 Italië",
+    "se": "🇸🇪 Zweden",
+}
 
-    cng_kg   = total_km / 100 * CNG_VERBRUIK_KG_PER_100KM
-    diesel_l = total_km / 100 * DIESEL_VERBRUIK_L_PER_100KM
 
-    cng_kosten    = cng_kg   * cng_p
-    diesel_kosten = diesel_l * diesel_p
-    besparing     = diesel_kosten - cng_kosten
-    besparing_pct = (besparing / diesel_kosten * 100) if diesel_kosten else 0
+def bereken_brandstof_per_route(tankevents: list) -> dict:
+    """
+    tankevents: list van {"label": str, "land": str|None, "segment_km": float}
+    Elk event = één tankbeurt op een locatie die een bepaald segment dekt.
+    land=None → gemiddelde van alle landen als fallback.
+    """
+    gem_cng_p    = sum(CNG_PRIJS.values())    / len(CNG_PRIJS)
+    gem_diesel_p = sum(DIESEL_PRIJS.values()) / len(DIESEL_PRIJS)
 
-    co2_cng    = total_km / 100 * CO2_CNG_KG_PER_100KM    # negatief getal
-    co2_diesel = total_km / 100 * CO2_DIESEL_KG_PER_100KM
-    co2_totaal_voordeel = co2_diesel - co2_cng             # altijd positief
+    totaal_cng    = 0.0
+    totaal_diesel = 0.0
+    totaal_co2_cng    = 0.0
+    totaal_co2_diesel = 0.0
+    details = []
+
+    for ev in tankevents:
+        land = ev["land"]
+        km   = ev["segment_km"]
+        cng_p    = CNG_PRIJS.get(land,    gem_cng_p)    if land else gem_cng_p
+        diesel_p = DIESEL_PRIJS.get(land, gem_diesel_p) if land else gem_diesel_p
+
+        cng_kg   = km / 100 * CNG_VERBRUIK_KG_PER_100KM
+        diesel_l = km / 100 * DIESEL_VERBRUIK_L_PER_100KM
+        cng_k    = cng_kg   * cng_p
+        diesel_k = diesel_l * diesel_p
+        co2_c    = km / 100 * CO2_CNG_KG_PER_100KM
+        co2_d    = km / 100 * CO2_DIESEL_KG_PER_100KM
+
+        totaal_cng        += cng_k
+        totaal_diesel     += diesel_k
+        totaal_co2_cng    += co2_c
+        totaal_co2_diesel += co2_d
+
+        details.append({
+            "label":         ev["label"],
+            "land":          land or "Onbekend (gem.)",
+            "segment_km":    km,
+            "cng_kg":        cng_kg,
+            "diesel_l":      diesel_l,
+            "cng_kosten":    cng_k,
+            "diesel_kosten": diesel_k,
+            "cng_prijs":     cng_p,
+            "diesel_prijs":  diesel_p,
+            "co2_cng":       co2_c,
+            "co2_diesel":    co2_d,
+        })
+
+    besparing    = totaal_diesel - totaal_cng
+    co2_voordeel = totaal_co2_diesel - totaal_co2_cng
 
     return {
-        "cng_kg":            cng_kg,
-        "diesel_l":          diesel_l,
-        "cng_kosten":        cng_kosten,
-        "diesel_kosten":     diesel_kosten,
+        "details":           details,
+        "totaal_cng":        totaal_cng,
+        "totaal_diesel":     totaal_diesel,
         "besparing":         besparing,
-        "besparing_pct":     besparing_pct,
-        "co2_cng":           co2_cng,
-        "co2_diesel":        co2_diesel,
-        "co2_voordeel":      co2_totaal_voordeel,
-        "co2_voordeel_pct":  (co2_totaal_voordeel / co2_diesel * 100) if co2_diesel else 0,
-        "cng_prijs":         cng_p,
-        "diesel_prijs":      diesel_p,
+        "besparing_pct":     (besparing    / totaal_diesel     * 100) if totaal_diesel     else 0,
+        "co2_cng":           totaal_co2_cng,
+        "co2_diesel":        totaal_co2_diesel,
+        "co2_voordeel":      co2_voordeel,
+        "co2_voordeel_pct":  (co2_voordeel / totaal_co2_diesel * 100) if totaal_co2_diesel else 0,
     }
 
 
@@ -468,6 +508,21 @@ _geo_osm = RateLimiter(Nominatim(user_agent=NOMINATIM_UA, timeout=10).geocode,
                        min_delay_seconds=1, max_retries=2, error_wait_seconds=1.5)
 _geo_photon = RateLimiter(Photon(user_agent=NOMINATIM_UA, timeout=10).geocode,
                           min_delay_seconds=0.5, max_retries=2, error_wait_seconds=1.0)
+_geo_osm_rev = RateLimiter(Nominatim(user_agent=NOMINATIM_UA + "-rev", timeout=10).reverse,
+                            min_delay_seconds=1, max_retries=2, error_wait_seconds=1.5)
+
+
+@st.cache_data(ttl=24 * 3600, show_spinner=False)
+def get_country(lat: float, lon: float) -> str | None:
+    """Geeft de landnaam terug (zoals in CNG_PRIJS) via reverse geocoding."""
+    try:
+        loc = _geo_osm_rev((lat, lon), exactly_one=True, language="en")
+        if loc:
+            cc = loc.raw.get("address", {}).get("country_code", "").lower()
+            return COUNTRY_CODE_MAP.get(cc)
+    except Exception:
+        pass
+    return None
 
 
 @st.cache_data(ttl=24 * 3600, show_spinner=False)
@@ -783,18 +838,6 @@ with st.sidebar:
     corridor_km = st.slider("Corridorbreedte (km)", 5, 200, 50, 5)
     route_name  = st.text_input("Routenaam", value="Mijn Route")
 
-    st.divider()
-    st.markdown("**Brandstofprijzen**")
-    gekozen_land = st.selectbox(
-        "Land voor prijsberekening",
-        LANDEN,
-        index=0,
-        help="Selecteer het primaire land van de route voor de juiste CNG- en dieselprijs.",
-    )
-    st.caption(
-        f"CNG (OG): **€ {CNG_PRIJS[gekozen_land]:.3f}/kg** &nbsp;·&nbsp; "
-        f"Diesel: **€ {DIESEL_PRIJS[gekozen_land]:.3f}/L**"
-    )
 
     st.divider()
     generate_btn = st.button("⛽  Genereer route", type="primary", use_container_width=True)
@@ -894,34 +937,42 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# ── CO₂ & Kostenvergelijking ──────────────────────────────────────────────────
-bf = bereken_brandstof(total_km, gekozen_land)
+# ── CO₂ & Kostenvergelijking (per land) ──────────────────────────────────────
+# Bouw fueling-events: start + elke tankstop dekt het volgende segment
+fueling_locs = [{"label": "Vertrek", "lat": start_coord[0], "lon": start_coord[1]}]
+for i, s in enumerate(stops, 1):
+    fueling_locs.append({"label": f"Stop {i} — {s['name']}", "lat": s["lat"], "lon": s["lon"]})
 
-besparing_str   = f"€ {bf['besparing']:,.0f}".replace(",", ".")
-diesel_k_str    = f"€ {bf['diesel_kosten']:,.0f}".replace(",", ".")
-cng_k_str       = f"€ {bf['cng_kosten']:,.0f}".replace(",", ".")
-co2_saved_ton   = bf["co2_voordeel"] / 1000
-co2_diesel_ton  = bf["co2_diesel"] / 1000
+n_events = len(fueling_locs)
+# Elk event dekt interval_km, het laatste event dekt de rest
+segment_kms = [float(interval_km)] * n_events
+segment_kms[-1] = max(total_km - (n_events - 1) * interval_km, total_km / max(n_events, 1))
 
-# CO₂ is negatief voor Bio-CNG — frame dit als "CO₂-negatief"
-co2_cng_label = (
-    f"−{abs(bf['co2_cng']):.0f} kg CO₂e (CO₂-negatief)"
-    if bf["co2_cng"] < 0
-    else f"{bf['co2_cng']:.0f} kg CO₂e"
-)
+with st.spinner("Landen opzoeken voor brandstofprijzen..."):
+    tankevents = []
+    for i, loc in enumerate(fueling_locs):
+        land = get_country(loc["lat"], loc["lon"])
+        tankevents.append({"label": loc["label"], "land": land, "segment_km": segment_kms[i]})
+
+bf = bereken_brandstof_per_route(tankevents)
+
+# ── Totaaloverzicht ────────────────────────────────────────────────────────────
+besparing_str  = f"€ {bf['besparing']:,.0f}".replace(",", ".")
+diesel_tot_str = f"€ {bf['totaal_diesel']:,.0f}".replace(",", ".")
+cng_tot_str    = f"€ {bf['totaal_cng']:,.0f}".replace(",", ".")
+co2_saved_ton  = bf["co2_voordeel"] / 1000
 
 st.markdown(f"""
 <hr style="border-color:#1e3a52;margin:8px 0 20px"/>
 <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
   <div style="font-size:1.5rem">🌿</div>
   <div style="font-size:1.1rem;font-weight:700;color:#e8f4fd">
-    Bio-CNG vs Diesel — brandstofkosten & CO₂
+    Bio-CNG vs Diesel — brandstofkosten &amp; CO₂
     <span style="font-size:.8rem;font-weight:400;color:#7fa8c9;margin-left:8px">
-      {gekozen_land} · {total_km:.0f} km
+      per land berekend · {total_km:.0f} km totaal
     </span>
   </div>
 </div>
-
 <div class="metric-row">
   <div class="metric-card" style="border-top:3px solid #43a047">
     <div class="icon">💶</div>
@@ -944,34 +995,51 @@ st.markdown(f"""
     <div class="lbl">CO₂-reductie (Bio-CNG is CO₂-negatief)</div>
   </div>
 </div>
-
-<div style="background:#0d2137;border:1px solid #1e3a52;border-radius:12px;
-            padding:18px 22px;margin-bottom:20px;display:grid;
-            grid-template-columns:1fr 1fr;gap:16px">
-  <div>
-    <div style="color:#7fa8c9;font-size:.75rem;text-transform:uppercase;letter-spacing:.7px;margin-bottom:8px">
-      🔵 Diesel (referentie)
-    </div>
-    <div style="color:#cdd9e5;font-size:.9rem;line-height:1.8">
-      Verbruik: <b>{bf['diesel_l']:.0f} liter</b>
-      @ € {bf['diesel_prijs']:.3f}/L<br>
-      Kosten: <b style="color:#ef9a9a">{diesel_k_str}</b><br>
-      CO₂: <b style="color:#ef9a9a">{co2_diesel_ton:.1f} ton CO₂</b>
-    </div>
-  </div>
-  <div>
-    <div style="color:#7fa8c9;font-size:.75rem;text-transform:uppercase;letter-spacing:.7px;margin-bottom:8px">
-      🟢 Bio-CNG OG Clean Fuels
-    </div>
-    <div style="color:#cdd9e5;font-size:.9rem;line-height:1.8">
-      Verbruik: <b>{bf['cng_kg']:.0f} kg</b>
-      @ € {bf['cng_prijs']:.3f}/kg<br>
-      Kosten: <b style="color:#a5d6a7">{cng_k_str}</b><br>
-      CO₂: <b style="color:#a5d6a7">{co2_cng_label}</b>
-    </div>
-  </div>
-</div>
 """, unsafe_allow_html=True)
+
+# ── Per-stop uitsplitsing ──────────────────────────────────────────────────────
+with st.expander("📊 Brandstofkosten per tankstop uitsplitsen", expanded=True):
+    # Tabelkop
+    header = (
+        "<div style='display:grid;grid-template-columns:2fr 1.2fr .8fr 1fr 1fr 1fr;"
+        "gap:6px;padding:6px 10px;background:#0a1929;border-radius:8px 8px 0 0;"
+        "font-size:.72rem;color:#7fa8c9;text-transform:uppercase;letter-spacing:.6px;'>"
+        "<div>Locatie</div><div>Land</div><div>Segment</div>"
+        "<div>Diesel</div><div>Bio-CNG</div><div>Besparing</div></div>"
+    )
+    rows_html = ""
+    for ev in bf["details"]:
+        bes = ev["diesel_kosten"] - ev["cng_kosten"]
+        rows_html += (
+            f"<div style='display:grid;grid-template-columns:2fr 1.2fr .8fr 1fr 1fr 1fr;"
+            f"gap:6px;padding:8px 10px;border-bottom:1px solid #1e3a52;"
+            f"font-size:.82rem;color:#cdd9e5;'>"
+            f"<div style='color:#e8f4fd;font-weight:500'>{ev['label']}</div>"
+            f"<div>{ev['land']}</div>"
+            f"<div>{ev['segment_km']:.0f} km</div>"
+            f"<div style='color:#ef9a9a'>€ {ev['diesel_kosten']:.0f}<br>"
+            f"<span style='font-size:.7rem;color:#7fa8c9'>{ev['diesel_l']:.0f}L @ €{ev['diesel_prijs']:.3f}</span></div>"
+            f"<div style='color:#a5d6a7'>€ {ev['cng_kosten']:.0f}<br>"
+            f"<span style='font-size:.7rem;color:#7fa8c9'>{ev['cng_kg']:.0f}kg @ €{ev['cng_prijs']:.3f}</span></div>"
+            f"<div style='color:#66bb6a;font-weight:700'>€ {bes:.0f}</div>"
+            f"</div>"
+        )
+    # Totaalrij
+    rows_html += (
+        f"<div style='display:grid;grid-template-columns:2fr 1.2fr .8fr 1fr 1fr 1fr;"
+        f"gap:6px;padding:10px;background:#112233;border-radius:0 0 8px 8px;"
+        f"font-size:.85rem;font-weight:700;color:#e8f4fd;'>"
+        f"<div>Totaal</div><div></div><div>{total_km:.0f} km</div>"
+        f"<div style='color:#ef9a9a'>{diesel_tot_str}</div>"
+        f"<div style='color:#a5d6a7'>{cng_tot_str}</div>"
+        f"<div style='color:#66bb6a'>{besparing_str}</div>"
+        f"</div>"
+    )
+    st.markdown(
+        f"<div style='border:1px solid #1e3a52;border-radius:9px;overflow:hidden;"
+        f"margin-bottom:8px'>{header}{rows_html}</div>",
+        unsafe_allow_html=True,
+    )
 
 # ── Kaart ────────────────────────────────────────────────────────────────────
 folium_map = build_map(result)
