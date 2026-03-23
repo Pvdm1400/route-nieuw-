@@ -995,7 +995,7 @@ cng_tot_str    = f"€ {bf['totaal_cng']:,.0f}".replace(",", ".")
 co2_saved_ton  = bf["co2_voordeel"] / 1000
 
 st.markdown(f"""
-<hr style="border-color:#2e2e2e;margin:8px 0 20px"/>
+<hr style="border-color:#d9d9d9;margin:8px 0 20px"/>
 <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
   <div style="font-size:1.5rem">🌿</div>
   <div style="font-size:1.1rem;font-weight:700;color:#ffffff;font-family:'Inter',sans-serif">
@@ -1006,22 +1006,22 @@ st.markdown(f"""
   </div>
 </div>
 <div class="metric-row">
-  <div class="metric-card" style="border-top:3px solid #F18700">
+  <div class="metric-card" style="border-top:3px solid #13a538">
     <div class="icon">💶</div>
     <div class="val" style="color:#F18700">{besparing_str}</div>
     <div class="lbl">Kostenbesparing CNG vs Diesel</div>
   </div>
-  <div class="metric-card" style="border-top:3px solid #F18700">
+  <div class="metric-card" style="border-top:3px solid #13a538">
     <div class="icon">📉</div>
     <div class="val" style="color:#F18700">{bf['besparing_pct']:.0f}%</div>
     <div class="lbl">Goedkoper dan diesel</div>
   </div>
-  <div class="metric-card" style="border-top:3px solid #d97a00">
+  <div class="metric-card" style="border-top:3px solid #13a538">
     <div class="icon">🌍</div>
     <div class="val" style="color:#ffc04d">{co2_saved_ton:.1f} ton</div>
     <div class="lbl">CO₂-voordeel t.o.v. diesel</div>
   </div>
-  <div class="metric-card" style="border-top:3px solid #d97a00">
+  <div class="metric-card" style="border-top:3px solid #13a538">
     <div class="icon">♻️</div>
     <div class="val" style="color:#ffc04d">{bf['co2_voordeel_pct']:.0f}%+</div>
     <div class="lbl">CO₂-reductie (Bio-CNG is CO₂-negatief)</div>
