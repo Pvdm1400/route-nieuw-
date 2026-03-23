@@ -1034,7 +1034,7 @@ with st.expander("📊 Brandstofkosten per tankstop uitsplitsen", expanded=True)
     # Tabelkop
     header = (
         "<div style='display:grid;grid-template-columns:2fr 1.2fr .8fr 1fr 1fr 1fr;"
-        "gap:6px;padding:6px 10px;background:##F18700;border-radius:8px 8px 0 0;"
+        "gap:6px;padding:6px 10px;background:#F18700;border-radius:8px 8px 0 0;"
         "font-size:.72rem;color:#888888;text-transform:uppercase;letter-spacing:.6px;'>"
         "<div>Locatie</div><div>Land</div><div>Segment</div>"
         "<div>Diesel</div><div>Bio-CNG</div><div>Besparing</div></div>"
@@ -1049,11 +1049,11 @@ with st.expander("📊 Brandstofkosten per tankstop uitsplitsen", expanded=True)
             f"<div style='color:#ffffff;font-weight:500'>{ev['label']}</div>"
             f"<div>{ev['land']}</div>"
             f"<div>{ev['segment_km']:.0f} km</div>"
-            f"<div style='color:#ff8a65'>€ {ev['diesel_kosten']:.0f}<br>"
+            f"<div style='color:#ff0303'>€ {ev['diesel_kosten']:.0f}<br>"
             f"<span style='font-size:.7rem;color:#888888'>{ev['diesel_l']:.0f}L @ €{ev['diesel_prijs']:.3f}</span></div>"
             f"<div style='color:#F18700'>€ {ev['cng_kosten']:.0f}<br>"
             f"<span style='font-size:.7rem;color:#888888'>{ev['cng_kg']:.0f}kg @ €{ev['cng_prijs']:.3f}</span></div>"
-            f"<div style='color:#ffc04d;font-weight:700'>€ {bes:.0f}</div>"
+            f"<div style='color:#13A538;font-weight:700'>€ {bes:.0f}</div>"
             f"</div>"
         )
     # Totaalrij
@@ -1064,7 +1064,7 @@ with st.expander("📊 Brandstofkosten per tankstop uitsplitsen", expanded=True)
         f"<div>Totaal</div><div></div><div>{total_km:.0f} km</div>"
         f"<div style='color:#ff8a65'>{diesel_tot_str}</div>"
         f"<div style='color:#F18700'>{cng_tot_str}</div>"
-        f"<div style='color:#ffc04d'>{besparing_str}</div>"
+        f"<div style='color:#13A538'>{besparing_str}</div>"
         f"</div>"
     )
     st.markdown(
