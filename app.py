@@ -887,7 +887,7 @@ st.markdown(f"""
 
 if not generate_btn:
     st.markdown("""
-    <div style="background:#1a1a1a;border:1px solid #2e2e2e;border-radius:10px;
+    <div style="background:#FFFFF;border:1px solid #2e2e2e;border-radius:10px;
          padding:32px;text-align:center;color:#888888;">
       <div style="font-size:2.5rem;margin-bottom:12px">👈</div>
       <div style="font-size:1.1rem;color:#cccccc;font-weight:600;">
